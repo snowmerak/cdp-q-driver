@@ -49,6 +49,32 @@ On Linux/macOS, use `go build -o cdp-q-driver ./cmd/cdp-q-driver` and run
 `./cdp-q-driver`. From a checkout, `go install ./cmd/cdp-q-driver` also installs
 the local CLI. The module-root package remains importable as the Go SDK.
 
+## Agent skill
+
+The repository ships one portable Agent Skill at
+[`skills/cdp-q-driver`](skills/cdp-q-driver/SKILL.md). It teaches agents to use
+named sessions, snapshot refs, native input, event/file workflows, and scoped
+cleanup with this CLI. Its supporting resources are included in the skill folder
+so an installed copy does not depend on this repository checkout.
+
+With a GitHub CLI version that provides `gh skill`, install it for Codex:
+
+```sh
+gh skill install snowmerak/cdp-q-driver cdp-q-driver --agent codex --scope user
+```
+
+Use `--scope project` for installation in the current project's skills directory,
+or choose another host with `--agent`. Invoke it as `$cdp-q-driver` in a supporting
+agent. The skill requires the CLI executable and an explicit browser CDP endpoint;
+installing the skill does not install Go/the CLI or start Chrome.
+
+To inspect before installation, use
+`gh skill preview snowmerak/cdp-q-driver cdp-q-driver`. For a reproducible install,
+add `--pin COMMIT_SHA` with the desired commit. See the
+[GitHub CLI skill-install documentation](https://cli.github.com/manual/gh_skill_install)
+for version selection and supported hosts. From a checkout, validate the package
+without publishing a release with `gh skill publish --dry-run`.
+
 ## CLI sessions
 
 First [start a dedicated debugging browser](#try-it). With its CDP endpoint
