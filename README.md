@@ -1,0 +1,218 @@
+# cdp-q-driver
+
+A Go SDK for task-owned Chromium tabs and snapshot-driven input over the Chrome DevTools Protocol (CDP).
+
+The first four milestones implement tab lifecycle management, frame-aware observation/input, and event/file workflows. Connect to an explicit browser endpoint, capture semantic snapshots across iframe/OOPIF and open shadow-root boundaries, select exact nodes by opaque refs or CSS/text/role, and verify input results. Prepare subscriptions before triggering popups, dialogs, file choosers, downloads, or network requests. Cleanup preserves borrowed tabs and the external browser.
+
+Closed shadow roots and non-axis-aligned frame transforms are not supported.
+
+## Requirements
+
+- Go 1.27.3 or newer, matching `go.mod`.
+- An existing Chromium-based browser with an accessible CDP endpoint.
+- A dedicated browser data directory when starting a debugging browser.
+
+The SDK does not start, install, or discover a user's browser. `Attach` accepts an HTTP(S) discovery URL, such as `http://127.0.0.1:9222`, or a full browser WebSocket URL ending in `/devtools/browser/<id>`. Page WebSocket URLs are rejected.
+
+## Try it
+
+Start a dedicated test browser. For example, in PowerShell:
+
+```powershell
+$exampleProfile = Join-Path $env:TEMP ('qdriver-example-' + [guid]::NewGuid())
+$exampleBrowser = Start-Process -WindowStyle Hidden -PassThru `
+  -FilePath 'C:\Program Files\Google\Chrome\Application\chrome.exe' `
+  -ArgumentList @(
+    '--headless=new',
+    '--remote-debugging-address=127.0.0.1',
+    '--remote-debugging-port=9222',
+    ('--user-data-dir="' + $exampleProfile + '"'),
+    '--no-first-run',
+    'about:blank'
+  )
+```
+
+Adjust the executable path for your installation. Once the CDP endpoint is ready, run:
+
+```sh
+go run ./examples/tabs -endpoint http://127.0.0.1:9222
+```
+
+The example opens a tab, loads a self-contained HTML page, reads its title, closes the tab, and prints a JSON cleanup report. The title should be `QDriver demo`, and `Cleanup.Closed` should contain `PageID`. The browser's original tabs remain open.
+
+Run the snapshot/ref/input example against the same browser:
+
+```sh
+go run ./examples/interact -endpoint http://127.0.0.1:9222
+```
+
+This example observes a self-contained form, finds its textbox and button refs, fills the textbox, clicks Save, and verifies the output. Its JSON `Result` should be `Go CDP works`. See the [complete interaction example](examples/interact/main.go) for error handling and cleanup.
+
+The [frames example](examples/frames/main.go) captures an iframe's controls, fills/clicks their refs, and clicks a button inside an open shadow root:
+
+```sh
+go run ./examples/frames -endpoint http://127.0.0.1:9222
+```
+
+Its JSON `Result` should be `Go frames work`, with two entries in `Frames`. Actual cross-site OOPIF coverage lives in the integration tests described below.
+
+The SDK leaves the example browser running. Stop only the browser process you started when finished:
+
+```powershell
+Stop-Process -Id $exampleBrowser.Id
+```
+
+The [example source](examples/tabs/main.go) shows the complete error-handling and cleanup flow. Import the library as:
+
+```go
+import qdriver "github.com/snowmerak/cdp-q-driver"
+```
+
+## API
+
+All operations accept a `context.Context`. `Options.CommandTimeout` defaults to 15 seconds and includes time waiting for another operation. `Options.CleanupTimeout` defaults to 5 seconds for the entire cleanup.
+
+| Operation | Behavior |
+| --- | --- |
+| `Attach(ctx, endpoint, options)` | Connect without selecting or creating a tab. Its context controls attachment only. |
+| `Browser.Pages(ctx)` | List page IDs, URLs, and titles without adopting them. |
+| `Browser.NewTask(ctx, name)` | Create a logical task sharing the browser's default context. |
+| `Task.NewPage(ctx)` | Open and attach to an owned `about:blank` tab. |
+| `Task.Adopt(ctx, targetID)` | Borrow an existing page; reject duplicate ownership on the same connection. |
+| `Page.Goto`, `Title`, `URL` | Navigate with a load wait, or read the current document. |
+| `Page.Evaluate` | Evaluate a top-document expression, await a Promise, and return JSON. Exceptions are errors. |
+| `Page.Screenshot` | Return a viewport screenshot as PNG bytes. |
+| `Page.Activate` | Bring the managed tab to the foreground. |
+| `Page.Frames(ctx)` | List reachable frame IDs, parent IDs, names, URLs, and `OutOfProcess` status. |
+| `Page.Snapshot(ctx, options)` | Combine AX and DOM/layout across frames/open shadows into bounded viewport, full-page, or subtree output. |
+| `Page.Click(ctx, locator)` | Activate the tab, scroll into view, check the exact hit target, and send one left click. |
+| `Page.Fill(ctx, locator, text)` | Replace a supported text control's contents and verify the retained text. |
+| `Page.Press(ctx, locator, key)` | Focus a control and send a key or modifier chord, such as Enter or Control+A. |
+| `Page.WaitForSelector(ctx, locator)` | Wait for a single visible element; ambiguity and stale refs fail immediately. |
+| `Page.WaitForFunction(ctx, expression)` | Poll a synchronous, truthy page expression. Like Evaluate, this invalidates refs. |
+| `Page.Subscribe(ctx, kinds...)` | Arm independent, bounded event streams; call `Next(ctx)` and `Close()`. |
+| `Page.ExpectPopup(ctx)` | Arm a single popup ownership claim, verified against its managed opener. |
+| `Page.ExpectDialog(ctx)`, `CurrentDialog()` | Observe one modal and explicitly accept or dismiss its specific handle. |
+| `Page.SetInputFiles(ctx, locator, paths...)` | Set absolute file paths on a file input, including hidden controls; empty paths clear it. |
+| `Page.SetFileChooserInterception(ctx, enabled)` | Explicitly intercept native file choosers across attached page/frame sessions. |
+| `Browser.EnableDownloads(ctx, directory)` | Explicitly configure the default context's download policy and GUID-named output files. |
+| `Page.ExpectDownload(ctx)` | Subscribe to download starts; each handle supports `Wait`, `Cancel`, and exclusive `SaveAs`. |
+| `Page.ExpectNetworkIdle(ctx, idleFor)`, `WaitForNetworkIdle(ctx, idleFor)` | Wait outside the operation gate for a quiet interval in observed page/frame requests. |
+| `Page.Close` | Close an owned tab and confirm its disappearance. Borrowed tabs return `ErrNotOwned`. |
+| `Task.Release(ctx, page)` | Relinquish a page without closing it; invalidate its old handle. |
+| `Task.Finish(ctx, keep...)` | Close owned tabs, release borrowed tabs, and retain explicitly named owned tabs. |
+| `Browser.Close(ctx)` | Interrupt calls, clean up tasks, and disconnect without sending `Browser.close`. |
+
+If tab creation succeeds but session setup fails, `NewPage` can return a non-nil page together with an error. The task still tracks it for cleanup. `Adopt` has the same behavior for a failed borrowed session setup. A failed session can be closed (if owned) or released.
+
+## Snapshots, refs, and input
+
+`SnapshotOptions.Scope` defaults to `Viewport`; `FullPage` includes off-screen rendered nodes without scrolling. `Subtree` requires a current `Root` ref and can select an iframe boundary, an open shadow host, or another ref-bearing element. Capturing a subtree does not scope subsequent actions; use the returned refs or an explicit frame locator. `MaxNodes` defaults to 1,000 and `MaxBytes` to 64 KiB of `Content`. Limits apply to emitted output, not the underlying AX/DOM collection. `Truncated` reports an output/ref-capacity limit. `Unsupported` identifies omitted closed-shadow, unsupported frame geometry, canvas, pseudo-element, or unavailable layout content. Password field values are omitted.
+
+Snapshots provide `Content`, structured `Nodes`, and opaque refs on interactive elements and iframe/open-shadow boundaries. `SnapshotNode.FrameID` and `Snapshot.Frames` retain the provenance of delivered content. Select a node's ref or look up its displayed label using `snapshot.Ref(label)`, then pass `qdriver.ByRef(ref)` to an action.
+
+`qdriver.CSS(selector)` searches the document and nested open shadow roots. `qdriver.Text(text)` matches exact whitespace-normalized text on the smallest matching DOM elements. `qdriver.Role(role, name)` uses Chromium's accessibility role and computed name, with exact matching. Without a frame scope, any top-document matches take precedence; otherwise exactly one match across descendant frames is required. CSS/text count hidden matches too; input then checks actionability. Ambiguity returns `ErrAmbiguous`, and invalid CSS returns `ErrInvalidLocator`.
+
+Restrict any locator to a current frame using `qdriver.CSS("#name").InFrame(frame.ID)` or `qdriver.Role("button", "Save").InFrame(frame.ID)`. Frame IDs come from `Page.Frames` or snapshot metadata. An empty or removed explicit frame ID never falls back to the root. Refs already carry their frame/document identity.
+
+Refs are tied to the exact page, frame, renderer session, document, and backend node. Unchanged nodes retain their refs across snapshots and high-level actions. Viewport/subtree captures preserve omitted refs; full-page captures replace the active set with delivered refs. `Options.MaxRefs` defaults to 10,000 per page; when retaining partial observations exceeds that limit, omitted refs are evicted oldest-first. Refs delivered in the current snapshot remain usable. Frame navigation, removal, or renderer/session replacement invalidates affected refs while preserving unrelated frames. `Evaluate` and `WaitForFunction` conservatively invalidate all refs. A ref from another page returns `ErrWrongPage`, and stale refs never fall back to a similar-looking element.
+
+Snapshot viewport filtering intersects each frame's viewport through its ancestors; it is not a complete CSS clipping/hit-test guarantee or an atomic snapshot of all same-document mutations. Actions independently recheck visibility, enabled state, document identity, deep shadow focus, and pointer interception, including ancestor iframe overlays. Coordinates include frame borders and positive axis-aligned scaling. A same-process iframe's hover-induced scroll correction may reposition the pointer once before the first press; a click itself is never replayed. Rotation, skew, perspective, and mirrored frame transforms return `ErrUnsupported`. Native input activates the managed tab, so it can change which tab is visible.
+
+`Fill` supports text/search/email/tel/url/password inputs, textareas, and plain contenteditable hosts, including controls in supported frames/open shadow roots. It uses native text insertion, including Unicode and empty replacement, then requires the exact requested text to remain. Application formatting can cause `ErrFillRejected` after a successful edit; that edit is not retried. Number/date inputs, rich editors, closed shadow roots, and other widgets remain outside the supported input set.
+
+`Press` supports Enter, Tab, Escape, Backspace, Delete, arrows, Home/End, PageUp/PageDown, printable characters, and Alt/Control/Meta/Shift event modifiers. It does not emulate a physical modifier-key sequence or provide IME composition.
+
+Input returns an `ActionReceipt`: `InputStarted` means a CDP input command may have been sent, including a pointer move; `InputCompleted` means the entire sequence was acknowledged. Neither means the application completed its work. Tab activation, scrolling, and focus can have effects even before input starts. On cancellation during a pressed gesture, one cleanup release may still complete that gesture under the cleanup budget; the press itself is never replayed. Use explicit page assertions/waits to verify the business result.
+
+Frame discovery merges renderer frame trees with browser-reported `parentFrameId` relationships. Only reachable OOPIF targets receive extra sessions, using named isolated worlds for DOM helpers without universal access. The SDK uses explicit attach rather than pausing targets/workers with auto-attach. `Options.MaxFrames` defaults to 128; exceeding it returns `ErrFrameLimit`. Frame collection can retry a transient renderer/context change before input, and selector waits can tolerate an in-progress frame transition within their deadline. Dispatched input is never retried. Older browser versions without the parent-frame metadata have not been verified.
+
+## Events, dialogs, and files
+
+Use **prepare → trigger → wait → close**. `Subscribe` returns only after observation is ready, and subscribers do not consume each other's events or the internal network tracker. Pass event kinds to filter noise: `PopupOpened`, `DialogOpened`, `FileChooserOpened`, `DownloadStarted`, `RequestStarted`, `RequestFinished`, or `RequestFailed`. An empty kind list observes all of them. `Event` carries the page/frame identity and the corresponding typed payload. Request IDs are scoped to `Request.SessionID`; headers and bodies are omitted.
+
+For example, with an existing managed `p` and `ctx`:
+
+```go
+popups, err := p.ExpectPopup(ctx)
+if err != nil {
+    return err
+}
+defer popups.Close()
+if _, err := p.Click(ctx, qdriver.CSS("#open")); err != nil {
+    return err
+}
+event, err := popups.Next(ctx)
+if err != nil {
+    return err
+}
+popup, err := event.Popup.Page(ctx)
+if err != nil {
+    return err
+}
+// popup is owned by the opener's task and is closed by Finish.
+```
+
+`ExpectPopup` claims the first subsequent opener-verified popup for cleanup, even if its event is never consumed or its page is never attached. Closing the subscription stops future claims; it does not relinquish an already claimed tab. An ordinary popup `Subscribe` observes without claiming ownership; `event.Popup.Page(ctx)` then borrows the tab. Popups without a verified managed opener are not automatically claimed. Popup notification does not imply document load; use a selector or explicit page condition afterward.
+
+Subscriptions live until their setup context is canceled, `Close` is called, or the page/connection ends. `Next` additionally accepts a per-wait deadline and does not hold the operation gate or inherit `CommandTimeout`. Canceling a `Next` call leaves its subscription active. `Options.EventBuffer` defaults to 64 queued events per subscription and `MaxSubscriptions` to 128 per page. Queue overflow terminates that stream with `ErrEventOverflow`; it never looks like a complete event history. Closing a stream discards its queued events.
+
+A JavaScript dialog can stall renderer commands. Its opening interrupts the active SDK renderer operation with `ErrDialogOpen`, releasing the gate so `event.Dialog.Accept(ctx, promptText)` or `Dismiss(ctx)` can handle it. Inspect `ActionReceipt`/`OperationError`: the triggering input or script may already have run. A successful triggering call is also possible if Chromium acknowledged it before the modal opened. Do not retry the trigger. Renderer commands reject an already-open modal; `CurrentDialog()` provides its handle even without a prepared subscription. Old handles return `ErrDialogStale`. Deferred input/object cleanup resumes after handling the modal. Browser policies can suppress dialogs; the SDK does not bypass them. Returning a borrowed page dismisses any observed modal before detaching.
+
+`SetInputFiles` validates absolute, existing regular files and an exact file input; multiple files require `multiple`. It supports hidden inputs and supported frame/open-shadow locators. Files must exist at the same paths for Go and Chrome: remote file transfer is not implemented. Empty paths clear the selection through the DOM value setter and dispatch synthetic `input`/`change` events when it changed, because Chromium may acknowledge an empty CDP file list without clearing it. Other selections use `DOM.setFileInputFiles`.
+
+For a native chooser workflow, explicitly enable `SetFileChooserInterception(ctx, true)`, subscribe to `FileChooserOpened`, then click its trigger. `event.FileChooser.SetFiles(ctx, paths...)` addresses the exact originating input; `Cancel(ctx)` supplies no files and clears its selection. Chooser handles are single-use and become stale on navigation or session replacement. Interception remains enabled until explicitly disabled or the page is returned/closed. Newly discovered OOPIF sessions inherit it when attached; an undiscovered frame cannot be intercepted retroactively. Release/Finish reset interception on borrowed sessions before detaching.
+
+Downloads require `EnableDownloads` with an absolute directory before `ExpectDownload`. This **changes the default browser context's policy for all clients**, using `allowAndName` and enabled download events. Use a dedicated debugging browser. `Browser.Close` resets the policy to `default`; CDP cannot read back and restore another client's previous policy. Suggested filenames remain metadata; the on-disk name is the browser GUID. `event.Download.Wait(ctx)` distinguishes completion from `ErrDownloadCanceled` (cancellation or transfer failure). `SaveAs(ctx, absoluteDestination)` waits for completion and copies into a new file without overwriting an existing destination; its parent must exist. Go and Chrome must share the download directory. Active downloads originating in managed frames are canceled when that page is returned or its task finishes, even without a subscriber; completed files remain for the caller to manage.
+
+Network idle is optional. Prepare `idle, err := p.ExpectNetworkIdle(ctx, idleFor)` before an action, then `idle.Wait(ctx)` afterward; zero duration means 500 ms. `WaitForNetworkIdle` prepares and waits immediately. The tracker observes the page and attached OOPIF sessions independently of public event queues, counts redirected requests once per session/request ID, and removes completed/failed requests. WebSocket and EventSource requests are excluded. It cannot reconstruct requests started before attachment and is not an application-readiness guarantee. Frame attachment/removal or OOPIF session changes invalidate an existing wait with `ErrNetworkTrackingChanged`; discover the new frames and prepare again. Tracking capacity is 4,096 in-flight requests; overflow makes subsequent idle waits fail rather than report a false quiet period.
+
+Run the complete [events example](examples/events/main.go) against a dedicated browser:
+
+```sh
+go run ./examples/events -endpoint http://127.0.0.1:9222
+```
+
+It verifies an owned popup, prompt handling, a hidden file input, a completed download, network idle, and cleanup using local fixtures and temporary files.
+
+## Lifecycle and errors
+
+- The SDK preserves external tabs. Adopting a tab never changes it into an owned tab, and a kept or released page is no longer owned by the old handle.
+- `Finish` and `Close` use a fresh cleanup timeout even when their input context has been canceled. Cleanup reports distinguish confirmed `Closed`, `Released`, `Kept`, and unconfirmed `Remaining` target IDs.
+- A partial `Finish` can be retried, but that task no longer accepts new work. `Browser.Close` is final and repeatable; it returns the same cleanup report.
+- A timeout does not undo a navigation or JavaScript side effect. An `OperationError` preserves the cause for `errors.Is` and conservatively reports `MayHaveEffects`. Mutating operations are never automatically retried.
+- A timed-out create request may have created a tab before its ID was received. Such an unknown tab cannot be included in automatic cleanup; inspect the browser's page list rather than blindly retrying the request.
+- Commands are serialized per browser connection. Event delivery and waits run independently of that command gate. Separate logical tasks share cookies and site storage; they are not security sandboxes.
+- A lost connection invalidates the connection. There is no automatic reconnect or command replay.
+
+## Tests
+
+```sh
+go mod verify
+go build ./...
+go vet ./...
+go test -v -count=1 -timeout=90s ./...
+```
+
+Integration tests start their own headless Chrome/Chromium/Edge process, temporary profile, and ephemeral CDP port. They use local HTTP fixtures and clean up only those resources. They never connect to a user's running browser.
+
+Set `QDRIVER_CHROME` to select a browser executable. Without an installed browser, integration tests skip; set `QDRIVER_INTEGRATION=1` to make a missing browser a failure. For example:
+
+```powershell
+$env:QDRIVER_INTEGRATION = '1'
+$env:QDRIVER_CHROME = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+go test -v -count=1 -timeout=90s ./...
+```
+
+Coverage includes tab lifecycle and preservation, cancellation and connection loss, all four built examples, Unicode/empty text editing, ref identity and stale/wrong-page rejection, ambiguous/hidden/disabled/covered targets, hover overlays, formatting rejection, viewport/full-page budgets, retained-ref capacity, asynchronous waits, and cancellation after a mouse press without replay.
+
+M3 tests use three local `.test` sites mapped to loopback with `--site-per-process`. They verify actual `iframe` targets, sibling/nested OOPIFs, same-process frames, border/scale/scroll coordinates, native clicks and typing, child-frame ambiguity, frame navigation/removal/renderer swaps, iframe/shadow subtrees, nested open shadows and slots, closed-root exclusion (including nested iframes), borrowed-page/OOPIF preservation, and frame limits. A focused unit test forces renderer-local backend ID collisions; real-browser tests verify the resulting targeting behavior.
+
+The implementation has been exercised on Windows/ARM64 with Go 1.27.3 and Chrome 156.0.8078.80 (CDP 1.3). Other platforms have browser discovery helpers but have not been run here. Run `go test -race ./...` on a platform with Go race-detector support.
+
+M4 tests cover independent subscribers, unconsumed popup ownership, modal interruption and chained stale dialog handles, borrowed-page modal/interception cleanup, hidden/multiple/shadow file inputs, chooser selection/cancel/navigation, completed/canceled downloads, exclusive SaveAs, active-transfer cleanup, public-stream overflow alongside network idle, subscription limits, failed requests, actual transport loss, and page/browser closure. Real OOPIF tests verify popup, chooser, upload, download, and request provenance, plus conservative idle failure on frame removal. Same-origin iframe dialogs are exercised without bypassing Chromium's cross-origin modal policy.
+
+## Design
+
+- [Project blueprint](docs/blueprint.md) — scope, architecture, milestones, and acceptance criteria (Korean).
+- [Ego Lite feasibility research](docs/research/ego-lite-cdp-feasibility.ko.md) — source analysis and observed behavior (Korean).
