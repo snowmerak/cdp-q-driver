@@ -3,9 +3,10 @@
 The CLI selects a named session with `--session ID` (default `default`) and uses
 the Go SDK through that session's local control process. That process retains
 tasks, page names, frame sessions, snapshot refs, and armed event subscriptions
-between separate command invocations. It connects to an explicitly supplied CDP
-endpoint. Session configuration and last-observed task/page grouping are saved
-in the OS application data directory. It does not launch Chrome or execute
+between separate command invocations. It launches an installed Chrome executable
+with `--chrome PATH`, or connects to an existing browser with `--endpoint URL`.
+Session configuration, managed browser profiles, and last-observed task/page
+grouping live in the OS application data directory. It does not execute
 `ego-browser nodejs` scripts.
 
 ## Build and run
@@ -15,7 +16,7 @@ From the repository root on Windows:
 ```powershell
 go build -o cdp-q-driver.exe ./cmd/cdp-q-driver
 .\cdp-q-driver.exe help
-.\cdp-q-driver.exe --session work --endpoint http://127.0.0.1:9222 page new --name main https://example.com
+.\cdp-q-driver.exe --session work page new --name main https://example.com
 .\cdp-q-driver.exe --session work page snapshot main
 .\cdp-q-driver.exe --session work session info
 .\cdp-q-driver.exe session list
@@ -27,13 +28,38 @@ use `./cdp-q-driver`. To install this checkout into Go's binary directory, run
 `go install ./cmd/cdp-q-driver`. The existing module-root SDK import path stays
 unchanged; the executable entry point is `cmd/cdp-q-driver`.
 
-Use the README's dedicated-browser launch example before the first command. A persistent
-built/installed executable is the supported background-process entry point.
+Without browser settings, the CLI discovers installed Chrome/Chromium on PATH
+and in standard OS application locations. `QDRIVER_CHROME` can supply an
+executable for discovery; `--chrome PATH` chooses one explicitly. Priority is
+explicit flags, saved session configuration, `QDRIVER_CHROME`, then PATH and OS
+locations. A bad explicit/saved/environment path is reported without falling
+back to a different browser. Missing Chrome produces `browser_not_found` with
+instructions to supply a path or an external endpoint; no runtime is created.
+Discovery does not scan browser profiles or probe arbitrary debugging ports.
+
+Managed launch supplies a dedicated persistent profile, automatic loopback CDP port,
+and a readiness wait; no manual debugging flags or endpoint are needed. Default
+launch has a visible window. Add `--headless` for an unattended browser, or use
+`--headless=false` on a later start to change back. On macOS use the executable
+inside the `.app` bundle; on Linux use the installed Chromium executable. The
+path and launch mode are saved, so later commands need only the session ID.
+The profile is separate from personal browser data; log in there when needed.
+The launcher uses `--remote-debugging-port=0`; this and headless mode can affect
+automation detection. Managed launch provides no bot-detection avoidance.
+
+To attach to an external browser instead, use `--endpoint URL` and prepare the
+browser as shown in the README's manual-launch example. Never combine `--chrome`
+and `--endpoint`. A persistent built/installed executable is the supported background-process entry point.
 `start` or `session ensure` explicitly gets or creates the selected session;
 ordinary task/page/event commands also do this automatically.
 `serve --endpoint URL` runs in the foreground instead. `stop`, Ctrl+C in a
-foreground session, and SIGTERM use bounded SDK cleanup without terminating
-Chrome. `stop` waits for the local listener and discovery file to be retired.
+foreground session, and SIGTERM use bounded cleanup. Managed Chrome is closed
+after SDK cleanup, with a process-kill fallback for only the launched child;
+external `--endpoint` browsers remain running. `stop` waits for browser cleanup,
+the local listener, and discovery-file retirement. Retained/released/manually
+opened tabs in a managed profile also close when its browser stops; the profile
+itself is retained. On cancellation during startup, a client may spend up to
+seven additional seconds allowing the child to clean up its owned browser.
 
 ## Session selection and configuration
 
@@ -53,8 +79,8 @@ IDs use 1..64 lowercase ASCII letters/digits, `-`, or `_`, beginning with a
 letter/digit. Path separators, traversal, and reserved Windows device names are
 rejected. Aliases and tasks are local to the session: both sessions above can
 have a page named `main`, and stopping one cleans up only its SDK resources.
-Sessions connected to the same default browser context share cookies/site
-storage; they are logical tab groups, not separate Chrome profiles.
+Sessions connected to the same external default browser context share cookies/site
+storage. `--chrome` sessions each have a dedicated persistent Chrome profile.
 
 The default application data root is:
 
@@ -67,11 +93,14 @@ The default application data root is:
 `--data-dir DIRECTORY` overrides that application root. Each session uses its own
 `sessions/ID/` subdirectory:
 
-- `session.json`: saved endpoint, SDK timeouts, creation/update times, last process
+- `session.json`: saved Chrome path/headless mode or endpoint, SDK timeouts, creation/update times, last process
   generation, last-observed tasks/pages, and the latest cleanup report.
 - `runtime.json`: the live loopback address, protocol version, process ID,
   generation, and a fresh random authentication token.
 - `qdriver-*.log`: startup/shutdown diagnostics for background processes.
+- `chrome-profile/`: persistent managed Chrome data, reused after stop/start.
+- `chrome-*.log`: managed Chrome diagnostics.
+- `browser.lock`: exclusive managed-profile launch marker with control/browser PIDs.
 
 Metadata is written through a temporary file and atomic replacement before a
 registry-changing RPC is acknowledged. A storage failure is reported explicitly
@@ -84,10 +113,11 @@ Runtime tokens are not printed in command results or placed in URLs.
 The HTTP listener binds only to `127.0.0.1` on an ephemeral port, authenticates
 every call, and rejects browser-origin and unexpected-Host requests.
 
-First use needs `--endpoint URL`, either globally or on `start`/`serve`. A
-successful session saves that endpoint for future starts. A live process is
+First use automatically discovers Chrome, or accepts `--chrome PATH` or
+`--endpoint URL`, either globally or on `start`/`serve`. A successful session saves the selected launch/connection settings
+for future starts. A live process is
 reused; a missing runtime is created from the saved settings. There is no guessed
-default CDP address. Explicit endpoint or SDK-timeout changes are rejected while
+default CDP address. Chrome path/mode, endpoint, or SDK-timeout changes are rejected while
 that session is running; stop it first to reconfigure it. Concurrent first-use
 clients join the same exclusively reserved runtime, then dispatch each original
 command once. Readiness/status probes may be repeated; browser mutations are
@@ -105,14 +135,14 @@ also works after stop and returns `lastObservedTasks`, `lastObservedPages`, and
 `lastCleanup`; this cached inventory is not proof that a browser target is alive.
 
 `--timeout` defaults to 30 seconds and applies to the entire client operation,
-including communication and waits. Set it separately on any invocation; no
+including browser startup, communication, and waits. Set it separately on any invocation; no
 server restart is required. `start`/`serve` also accept `--command-timeout`
 (default 15 seconds, maximum 24 hours) and `--cleanup-timeout` (default 5 seconds,
 maximum 1 minute). The SDK timeout additionally bounds each browser command;
-event/download waits run outside that command gate. The browser endpoint,
+event/download waits run outside that command gate. Chrome launch settings, the browser endpoint,
 discovery path, authentication capability, and SDK options are fixed for the
 control process's lifetime; changing them requires stopping and restarting it.
-Saved endpoint/timeouts are reused unless explicitly overridden for a new runtime.
+Saved launch/endpoint/timeouts are reused unless explicitly overridden for a new runtime.
 
 Stopping removes `runtime.json` and keeps `session.json`. Restart preserves the
 session ID/configuration but creates a fresh generation: live tasks, aliases,
@@ -122,9 +152,13 @@ leave browser tabs and a stale runtime file. Inspect its recorded process and
 confirm it has exited before removing that exact stale file; automatic ensure
 does not replace an unresponsive generation whose lifetime is uncertain.
 Use `page list --all` and explicitly adopt any retained tab after restarting;
-previous creation ownership is not reconstructed.
+previous creation ownership is not reconstructed. An abrupt crash in managed
+mode can leave Chrome and `browser.lock` running/present. Do not delete the lock
+until both recorded processes are confirmed exited; a stale runtime/lock does
+not authorize killing an arbitrary PID. Normal stop removes both runtime and
+browser lock, preserving the profile and saved configuration.
 
-The previous `--state FILE` mode remains available for explicit runtime-file
+The previous `--state FILE` mode remains available for external endpoints and explicit runtime-file
 selection and manual start. It does not create named-session metadata or
 auto-start missing processes, cannot be combined with `--session`/`--data-dir`,
 and its `start` still rejects an existing runtime. Previously created cache files
@@ -155,7 +189,8 @@ borrows one; `page close borrowed` is rejected. `page release borrowed` returns 
 comma-separated list of owned page names to leave open and release. Finishing
 `default` removes it too; create it again with `task new default` if needed.
 `stop` applies the same cleanup to all remaining tasks. Kept/released tabs and
-the external browser remain open.
+an external browser remain open. With managed launch, stopping the session
+closes its entire dedicated browser; task-level `--keep` lasts until that stop.
 
 Snapshots return `content`, `nodes`, `scope`, `documentId`, `frames`, `truncated`,
 and any `unsupported` features. CLI refs are opaque tokens such as

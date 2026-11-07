@@ -196,7 +196,8 @@ func TestCLINamedSessionValidationDoesNotStartProcesses(t *testing.T) {
 	base := buildCLI(t)
 	root := t.TempDir()
 	f := namedCLI(t, base.binary, root, "absent")
-	f.failed(t, "endpoint_required", "page", "list")
+	t.Setenv("QDRIVER_CHROME", filepath.Join(root, "missing-chrome.exe"))
+	f.failed(t, "invalid_argument", "page", "list")
 	f.failed(t, "invalid_argument", "--session", "../escape", "page", "list")
 	f.failed(t, "invalid_argument", "--state", filepath.Join(root, "ambiguous.json"), "page", "list")
 	if _, err := os.Stat(filepath.Join(root, "sessions")); !os.IsNotExist(err) {

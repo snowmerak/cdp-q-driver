@@ -393,7 +393,6 @@ func TestEventWaitNetworkIdleOverflowAndCancellation(t *testing.T) {
 		}
 	})
 	started, release := make(chan struct{}, 1), make(chan struct{})
-	defer close(release)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/slow" {
 			select {
@@ -408,9 +407,13 @@ func TestEventWaitNetworkIdleOverflowAndCancellation(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = fmt.Fprint(w, `<!doctype html><button id="fetch" onclick="fetch('/slow')">Fetch</button><button id="burst" onclick="fetch('/a');fetch('/b');fetch('/c')">Burst</button>`)
+		// Automatic favicon traffic must not compete for the one-event budget.
+		_, _ = fmt.Fprint(w, `<!doctype html><link rel="icon" href="data:,"><button id="fetch" onclick="fetch('/slow')">Fetch</button><button id="burst" onclick="fetch('/a');fetch('/b');fetch('/c')">Burst</button>`)
 	}))
-	defer server.Close()
+	defer func() {
+		close(release) // Unblock slow handlers even if an earlier assertion fails.
+		server.Close()
+	}()
 	p := newPage(t, newTask(t, b))
 	if err := p.Goto(t.Context(), server.URL); err != nil {
 		t.Fatal(err)

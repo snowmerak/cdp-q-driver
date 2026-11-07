@@ -70,6 +70,7 @@ type service struct {
 	stopEvents    context.CancelFunc
 	sessionID     string
 	store         *sessionStore
+	ownedBrowser  *launchedBrowser
 	closing       atomic.Bool
 }
 
@@ -99,6 +100,9 @@ func (s *service) close() (qdriver.FinishResult, error) {
 		s.closing.Store(true)
 		s.stopEvents()
 		s.closeResult, s.closeErr = s.browser.Close(context.Background())
+		if s.ownedBrowser != nil {
+			s.closeErr = errors.Join(s.closeErr, s.ownedBrowser.close())
+		}
 		if s.store != nil {
 			if err := s.store.finish(s.closeResult); err != nil {
 				s.closeErr = errors.Join(s.closeErr, &commandError{Code: "storage_error", Message: err.Error(), MayHaveEffects: true})
@@ -115,7 +119,11 @@ func (s *service) run(ctx context.Context, r request) (any, error) {
 		if s.closing.Load() {
 			state = "closing"
 		}
-		return map[string]any{"instance": s.instance, "pid": os.Getpid(), "version": protocolVersion, "session": s.sessionID, "state": state}, nil
+		result := map[string]any{"instance": s.instance, "pid": os.Getpid(), "version": protocolVersion, "session": s.sessionID, "state": state}
+		if s.ownedBrowser != nil {
+			result["browser"] = s.ownedBrowser.info()
+		}
+		return result, nil
 	}
 	if r.Command == "stop" {
 		return s.close()

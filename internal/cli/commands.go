@@ -8,17 +8,20 @@ import (
 	"time"
 )
 
-const help = `cdp-q-driver — stateful Chromium control over an explicit CDP endpoint
+const help = `cdp-q-driver — stateful Chromium control with managed launch or CDP attachment
 
-Usage: cdp-q-driver [--session ID] [--endpoint URL] [--data-dir DIR]
+Usage: cdp-q-driver [--session ID] [--chrome PATH | --endpoint URL] [--headless]
+                    [--data-dir DIR]
                     [--timeout 30s] COMMAND ...
 
 Session:
   session ensure             Get or create the selected named session
   session list               List sessions saved in OS application data
   session info               Inspect selected session's saved metadata
-  start [--endpoint URL]     Get or create a background named session
-  serve --endpoint URL       Run that process in the foreground
+  start [--chrome PATH | --endpoint URL] [--headless]
+                             Get or create a background named session
+  serve [--chrome PATH | --endpoint URL] [--headless]
+                             Run that process in the foreground
   status                     Inspect the running session
   stop                       Clean up tasks and stop the control process
 
@@ -69,9 +72,16 @@ are JSON. Help is text. Exit codes: 0 success, 1 operation failure, 2 usage.
 The local process retains refs/tasks/subscriptions across invocations. stop
 closes owned pages and releases borrowed pages. Crash recovery is not automatic.
 New named sessions auto-start on task/page/event commands; first use needs
---endpoint, later starts reuse saved configuration. status/stop/info/list do not
+an installed Chrome/Chromium, --chrome PATH, or --endpoint URL.
+Explicit flags and saved settings take precedence; otherwise QDRIVER_CHROME,
+PATH, and standard OS installation locations select Chrome automatically.
+Later starts reuse saved configuration.
+--chrome launches a visible browser with a dedicated persistent session profile
+and an automatic loopback CDP port; --headless opts out of the visible window.
+stop also closes a Chrome instance launched by this session; external endpoint
+browsers stay running. status/stop/info/list do not
 auto-start. --state FILE selects the previous explicit-file/manual-start mode.
-Browser launch and ego-browser Node.js script compatibility are not provided.
+ego-browser Node.js script compatibility is not provided.
 `
 
 func parseCommand(args []string, stdin io.Reader) (request, error) {

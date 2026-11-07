@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -22,6 +23,10 @@ type sessionMetadata struct {
 	Version        int           `json:"version"`
 	ID             string        `json:"id"`
 	Endpoint       string        `json:"endpoint"`
+	Chrome         string        `json:"chrome,omitempty"`
+	Headless       bool          `json:"headless,omitempty"`
+	BrowserPID     int           `json:"browserPid,omitempty"`
+	BrowserProfile string        `json:"browserProfile,omitempty"`
 	CommandTimeout time.Duration `json:"commandTimeout"`
 	CleanupTimeout time.Duration `json:"cleanupTimeout"`
 	CreatedAt      time.Time     `json:"createdAt"`
@@ -94,6 +99,9 @@ func platformDataRoot(goos, home, local, xdg string) (string, error) {
 
 func configureSession(o *appOptions, seen map[string]bool) error {
 	if o.State != "" {
+		if o.Chrome != "" || o.headlessSet {
+			return invalid("--chrome/--headless require a named session, not --state")
+		}
 		if seen["session"] || seen["data-dir"] {
 			return invalid("--state cannot be combined with --session or --data-dir")
 		}
@@ -145,11 +153,26 @@ func readMetadata(path, id string) (sessionMetadata, error) {
 }
 
 func resolveServe(o appOptions, requested serveOptions) (serveOptions, error) {
+	if requested.Chrome != "" && o.Chrome != "" && requested.Chrome != o.Chrome {
+		return requested, invalid("global and start/serve --chrome values disagree")
+	}
+	if requested.headlessSet && o.headlessSet && requested.Headless != o.Headless {
+		return requested, invalid("global and start/serve --headless values disagree")
+	}
+	if requested.Chrome == "" {
+		requested.Chrome = o.Chrome
+	}
+	if o.headlessSet {
+		requested.Headless, requested.headlessSet = o.Headless, true
+	}
 	if requested.Endpoint != "" && o.Endpoint != "" && requested.Endpoint != o.Endpoint {
 		return requested, invalid("global and start/serve --endpoint values disagree")
 	}
 	if requested.Endpoint == "" {
 		requested.Endpoint = o.Endpoint
+	}
+	if requested.Endpoint != "" && requested.Chrome != "" {
+		return requested, invalid("choose --chrome PATH or --endpoint URL, not both")
 	}
 	if o.Named {
 		saved, err := readMetadata(o.Metadata, o.Session)
@@ -157,8 +180,15 @@ func resolveServe(o appOptions, requested serveOptions) (serveOptions, error) {
 			return requested, err
 		}
 		if err == nil {
-			if requested.Endpoint == "" {
-				requested.Endpoint = saved.Endpoint
+			if requested.Endpoint == "" && requested.Chrome == "" {
+				if saved.Chrome != "" {
+					requested.Chrome = saved.Chrome
+				} else {
+					requested.Endpoint = saved.Endpoint
+				}
+			}
+			if requested.Chrome != "" && !requested.headlessSet {
+				requested.Headless = saved.Headless
 			}
 			if !requested.commandSet {
 				requested.CommandTimeout = saved.CommandTimeout
@@ -167,6 +197,21 @@ func resolveServe(o appOptions, requested serveOptions) (serveOptions, error) {
 				requested.CleanupTimeout = saved.CleanupTimeout
 			}
 		}
+	}
+	if requested.Chrome != "" {
+		if !o.Named {
+			return requested, invalid("--chrome requires a named session, not --state")
+		}
+		path, err := exec.LookPath(requested.Chrome)
+		if err != nil {
+			return requested, invalid("Chrome executable: %v", err)
+		}
+		requested.Chrome, err = filepath.Abs(path)
+		if err != nil {
+			return requested, err
+		}
+	} else if requested.headlessSet && requested.Endpoint != "" {
+		return requested, invalid("--headless configures managed Chrome launch and cannot be used with an external endpoint")
 	}
 	if requested.CommandTimeout == 0 {
 		requested.CommandTimeout = 15 * time.Second
@@ -186,8 +231,17 @@ func checkSession(o appOptions, d discovery, serve serveOptions) error {
 	if o.Named && d.Session != o.Session {
 		return &commandError{Code: "session_conflict", Message: "runtime belongs to another session"}
 	}
+	if serve.Endpoint != "" && d.Chrome != "" {
+		return &commandError{Code: "session_conflict", Message: "session owns a managed Chrome instance; stop it before switching to an external endpoint"}
+	}
 	if serve.Endpoint != "" && d.EndpointHash != "" && d.EndpointHash != endpointHash(serve.Endpoint) {
 		return &commandError{Code: "session_conflict", Message: "session is already attached to a different endpoint; stop it before changing configuration"}
+	}
+	if serve.Chrome != "" && (d.Chrome != serve.Chrome || d.Headless != serve.Headless) {
+		return &commandError{Code: "session_conflict", Message: "session uses different Chrome launch settings; stop it before changing configuration"}
+	}
+	if serve.headlessSet && (d.Chrome == "" || d.Headless != serve.Headless) {
+		return &commandError{Code: "session_conflict", Message: "session uses different Chrome launch settings; stop it before changing configuration"}
 	}
 	if (serve.commandSet && d.CommandTimeout != serve.CommandTimeout) || (serve.cleanupSet && d.CleanupTimeout != serve.CleanupTimeout) {
 		return &commandError{Code: "session_conflict", Message: "running session uses different SDK timeouts; stop it before changing configuration"}
@@ -238,8 +292,9 @@ func ensureSession(ctx context.Context, o appOptions, requested serveOptions) (d
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return discovery{}, startResult{}, err
 	}
-	if serve.Endpoint == "" {
-		return discovery{}, startResult{}, &commandError{Code: "endpoint_required", Message: "new session requires --endpoint URL (or an endpoint saved by an earlier successful start)"}
+	serve, err = autoChrome(serve)
+	if err != nil {
+		return discovery{}, startResult{}, err
 	}
 	started, startErr := startProcess(ctx, o, serve)
 	if startErr == nil {
@@ -265,7 +320,7 @@ func newSessionStore(o appOptions, serve serveOptions, instance string) (*sessio
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	return &sessionStore{path: o.Metadata, metadata: sessionMetadata{Version: protocolVersion, ID: o.Session, Endpoint: serve.Endpoint, CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout, CreatedAt: created, UpdatedAt: now, Instance: instance, PID: os.Getpid(), State: "running", Tasks: []string{"default"}, Pages: []pageView{}}}, nil
+	return &sessionStore{path: o.Metadata, metadata: sessionMetadata{Version: protocolVersion, ID: o.Session, Endpoint: serve.Endpoint, Chrome: serve.Chrome, Headless: serve.Headless, CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout, CreatedAt: created, UpdatedAt: now, Instance: instance, PID: os.Getpid(), State: "running", Tasks: []string{"default"}, Pages: []pageView{}}}, nil
 }
 
 func (s *sessionStore) save(ctx context.Context) error {
@@ -348,6 +403,9 @@ func sessionInfo(ctx context.Context, o appOptions) (map[string]any, error) {
 		return nil, err
 	}
 	result := map[string]any{"id": metadata.ID, "endpoint": publicEndpoint(metadata.Endpoint), "state": metadata.State, "running": false, "createdAt": metadata.CreatedAt, "updatedAt": metadata.UpdatedAt, "lastInstance": metadata.Instance, "lastPid": metadata.PID, "lastObservedTasks": metadata.Tasks, "lastObservedPages": metadata.Pages, "metadata": o.Metadata, "runtime": o.State, "lastCleanup": metadata.Cleanup}
+	if metadata.Chrome != "" {
+		result["browser"] = map[string]any{"chrome": metadata.Chrome, "headless": metadata.Headless, "profile": metadata.BrowserProfile, "lastPid": metadata.BrowserPID, "managed": true}
+	}
 	if d, err := loadDiscovery(o.State); err == nil && d.Session == o.Session {
 		probe, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 		reply, err := call(probe, d, request{Command: "status", TimeoutMS: 300})

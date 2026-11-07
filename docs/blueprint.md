@@ -45,7 +45,7 @@
 ### 첫 제품 범위
 
 - Go SDK: 연결, 작업, 페이지, 스냅샷, ref, locator, 액션, 대기와 정리.
-- 기존 CDP endpoint 연결. 제품의 브라우저 실행·설치 관리와 테스트용 브라우저 실행은 분리한다.
+- SDK는 기존 CDP endpoint에 연결한다. 후속 CLI는 `--chrome PATH`로 설치된 Chrome 실행·전용 지속 프로필·자동 CDP 준비도 제공한다. 브라우저 설치는 별도다.
 - AX·DOM·레이아웃 정보를 조합한 텍스트 스냅샷과 구조화된 ref 목록.
 - viewport·전체 페이지·subtree 관찰. 세부 범위는 단계별로 추가한다.
 - ref·CSS부터 시작해 text·role locator로 확장.
@@ -59,7 +59,7 @@
 ### 첫 제품 이후 후보
 
 - CLI의 crash recovery, 작업·페이지 소유권의 영속 ledger와 재개.
-- 제품의 브라우저 실행 관리와 지속 프로필 선택.
+- 브라우저 자동 설치와 사용자 기본 프로필 선택·이전.
 - 독립 BrowserContext를 이용한 작업별 저장소 격리.
 - 협력적 handoff와 재개, UI 또는 확장 기능을 통한 사용자 제어 연동.
 - 고급 drag-and-drop, rich clipboard와 OS별 입력 기능.
@@ -130,6 +130,10 @@ flowchart TB
 공개 package 이름은 `qdriver`다. 공개 SDK 타입과 진입점은 모듈 루트에 있다. CLI 앱은 `cmd/cdp-q-driver`, 로컬 client/server·명령 파싱·핸들 관리는 `internal/cli`가 소유하며 SDK를 직접 재사용한다. SDK 내부를 CLI 도입만을 위해 재배치하지 않는다.
 
 CLI는 `--session ID`로 독립적인 Task·페이지 그룹을 선택한다. 세션이 없으면 첫 task/page/event 호출에서 hidden/detached 제어 프로세스를 생성하고, 있으면 인증된 readiness를 확인해 재사용한다. 첫 호출의 명시적인 CDP endpoint와 SDK 설정을 저장해 중지 후 새 프로세스에서도 사용한다. `start`와 `session ensure`도 동일한 get-or-create를 제공하고 `serve`는 foreground 실행이다. status·stop·session info/list는 프로세스를 생성하지 않는다. 여러 첫 호출은 O_EXCL runtime 예약의 승자에게 합류하고 원래 브라우저 명령은 한 번만 보낸다.
+
+후속 자동 실행은 `--chrome PATH`와 선택적 `--headless`를 받는다. 제어 프로세스가 세션별 `chrome-profile/`을 유지하고 Chrome이 선택한 loopback CDP 포트의 준비를 기다려 SDK에 전달한다. Chrome 경로·실행 모드를 저장하며 재시작 때 이전 임시 endpoint를 재사용하지 않는다. 기본은 창이 보이는 브라우저다. stop은 SDK 정리 후 직접 실행한 Chrome 전체를 종료하지만 외부 endpoint 브라우저는 보존한다. 프로필 데이터는 중지 후에도 유지한다. 비정상 종료 후에는 `browser.lock`과 기록된 프로세스를 확인하는 명시적인 복구가 필요하며 임의 PID 종료·프로필 삭제는 하지 않는다.
+
+명시적인 경로·endpoint나 저장된 설정이 없으면 `QDRIVER_CHROME`, PATH, OS별 기본 설치 경로 순으로 Chrome/Chromium 실행 파일을 찾는다. 찾은 경로도 세션 설정으로 저장한다. 사용자가 선택한 잘못된 경로를 다른 브라우저로 조용히 대체하지 않으며, 브라우저가 없으면 실행 전 `browser_not_found`로 필요한 경로·endpoint를 안내한다. status·stop·session info/list는 자동 탐색·실행을 하지 않는다.
 
 OS 앱 데이터 경로는 Windows LOCALAPPDATA, macOS Library/Application Support, Linux XDG_DATA_HOME 또는 ~/.local/share 아래의 cdp-q-driver다. `sessions/<ID>/session.json`에는 설정과 마지막 관측 Task·탭 그룹 및 cleanup 보고서를 atomic replace로 기록한다. `runtime.json`에는 loopback 주소·프로세스/세대 ID·무작위 token을 두고 종료 시 제거한다. 세션 ID는 경로 탈출과 OS 예약 이름을 거절한다. `--data-dir`은 앱 데이터 루트를 변경하고 기존 `--state` 수동 모드는 별도로 유지한다.
 

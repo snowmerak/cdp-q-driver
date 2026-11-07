@@ -117,6 +117,8 @@ type discovery struct {
 	PID            int           `json:"pid"`
 	Session        string        `json:"session,omitempty"`
 	EndpointHash   string        `json:"endpointHash,omitempty"`
+	Chrome         string        `json:"chrome,omitempty"`
+	Headless       bool          `json:"headless,omitempty"`
 	CommandTimeout time.Duration `json:"commandTimeout,omitempty"`
 	CleanupTimeout time.Duration `json:"cleanupTimeout,omitempty"`
 }

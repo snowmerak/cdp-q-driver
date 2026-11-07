@@ -46,7 +46,7 @@ func runServer(ctx context.Context, options appOptions, serve serveOptions) (res
 	defer func() {
 		resultErr = errors.Join(resultErr, file.Close(), removeOwnedState(options.State, os.Getpid(), instance))
 	}()
-	d := discovery{Version: protocolVersion, Token: token, Instance: instance, PID: os.Getpid(), EndpointHash: endpointHash(serve.Endpoint), CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout}
+	d := discovery{Version: protocolVersion, Token: token, Instance: instance, PID: os.Getpid(), EndpointHash: endpointHash(serve.Endpoint), Chrome: serve.Chrome, Headless: serve.Headless, CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout}
 	if options.Named {
 		d.Session = options.Session
 	}
@@ -59,18 +59,35 @@ func runServer(ctx context.Context, options appOptions, serve serveOptions) (res
 	}
 	defer func() { _ = listener.Close() }()
 	startup, cancel := context.WithTimeout(ctx, options.Timeout)
+	defer cancel()
+	var owned *launchedBrowser
+	var browserExited <-chan struct{}
+	if serve.Chrome != "" {
+		owned, err = launchBrowser(startup, options, serve)
+		if err != nil {
+			return err
+		}
+		defer func() { resultErr = errors.Join(resultErr, owned.close()) }()
+		serve.Endpoint = owned.endpoint
+		d.EndpointHash = endpointHash(serve.Endpoint)
+		browserExited = owned.done
+	}
 	b, err := qdriver.Attach(startup, serve.Endpoint, qdriver.Options{CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout})
 	if err != nil {
 		cancel()
 		return errors.New(strings.ReplaceAll(err.Error(), serve.Endpoint, "[browser endpoint]"))
 	}
 	s, err := newService(startup, b, instance)
+	if err == nil {
+		err = startup.Err()
+	}
 	cancel()
 	if err != nil {
 		_, closeErr := b.Close(context.Background())
 		return errors.Join(err, closeErr)
 	}
 	defer func() { _, err := s.close(); resultErr = errors.Join(resultErr, err) }()
+	s.ownedBrowser = owned
 	if options.Named {
 		s.sessionID = options.Session
 		store, err := newSessionStore(options, serve, instance)
@@ -78,6 +95,10 @@ func runServer(ctx context.Context, options appOptions, serve serveOptions) (res
 			return err
 		}
 		s.store = store
+		if owned != nil {
+			store.metadata.BrowserPID = owned.cmd.Process.Pid
+			store.metadata.BrowserProfile = owned.profile
+		}
 		if err := s.persistInventory(); err != nil {
 			return err
 		}
@@ -102,6 +123,7 @@ func runServer(ctx context.Context, options appOptions, serve serveOptions) (res
 	select {
 	case <-ctx.Done():
 	case <-s.done:
+	case <-browserExited:
 	case err := <-served:
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err

@@ -8,3 +8,5 @@ import (
 )
 
 func backgroundProcess(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
+
+func browserProcess(cmd *exec.Cmd, _ bool) { backgroundProcess(cmd) }

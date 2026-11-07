@@ -4,23 +4,28 @@ A Go SDK and stateful CLI for task-owned Chromium tabs and snapshot-driven input
 
 A stateful CLI is available at `cmd/cdp-q-driver`. Select a named session with
 `--session ID`; missing sessions start automatically and reuse their saved CDP
-configuration. Session metadata lives in the OS application data directory.
+configuration. It finds installed Chrome/Chromium automatically when no browser
+settings are supplied. Pass `--chrome PATH` to choose an executable, or
+`--endpoint URL` to attach to an existing debugging browser. Session metadata
+and managed Chrome profiles live in the OS application data directory.
 Each session keeps tasks, page names, refs, and event subscriptions alive across
 terminal invocations while preserving
 the SDK's existing import path. See the [CLI guide](docs/cli.md) for all commands,
 JSON outcomes, session lifetime, and file/event workflows.
 
-The first four milestones implement tab lifecycle management, frame-aware observation/input, and event/file workflows. Connect to an explicit browser endpoint, capture semantic snapshots across iframe/OOPIF and open shadow-root boundaries, select exact nodes by opaque refs or CSS/text/role, and verify input results. Prepare subscriptions before triggering popups, dialogs, file choosers, downloads, or network requests. Cleanup preserves borrowed tabs and the external browser.
+The first four milestones implement tab lifecycle management, frame-aware observation/input, and event/file workflows. Launch a dedicated browser or connect to an explicit endpoint, capture semantic snapshots across iframe/OOPIF and open shadow-root boundaries, select exact nodes by opaque refs or CSS/text/role, and verify input results. Prepare subscriptions before triggering popups, dialogs, file choosers, downloads, or network requests. SDK cleanup preserves borrowed tabs and the external browser; stopping a CLI-managed Chrome session also terminates its dedicated browser.
 
 Closed shadow roots and non-axis-aligned frame transforms are not supported.
 
 ## Requirements
 
 - Go 1.27.3 or newer, matching `go.mod`.
-- An existing Chromium-based browser with an accessible CDP endpoint.
-- A dedicated browser data directory when starting a debugging browser.
+- An installed Chrome/Chromium browser (automatically found on PATH or in standard
+  OS installation locations), an explicit `--chrome PATH`, or an existing
+  debugging endpoint supplied with `--endpoint URL`.
 
-The SDK does not start, install, or discover a user's browser. `Attach` accepts an HTTP(S) discovery URL, such as `http://127.0.0.1:9222`, or a full browser WebSocket URL ending in `/devtools/browser/<id>`. Page WebSocket URLs are rejected.
+The SDK's `Attach` does not start, install, or discover a user's browser; the CLI's
+`--chrome` mode manages launch separately. `Attach` accepts an HTTP(S) discovery URL, such as `http://127.0.0.1:9222`, or a full browser WebSocket URL ending in `/devtools/browser/<id>`. Page WebSocket URLs are rejected.
 
 ## Install or build
 
@@ -65,8 +70,10 @@ gh skill install snowmerak/cdp-q-driver cdp-q-driver --agent codex --scope user
 
 Use `--scope project` for installation in the current project's skills directory,
 or choose another host with `--agent`. Invoke it as `$cdp-q-driver` in a supporting
-agent. The skill requires the CLI executable and an explicit browser CDP endpoint;
-installing the skill does not install Go/the CLI or start Chrome.
+agent. The skill requires the CLI executable and an installed browser or an
+explicit browser CDP endpoint. The CLI discovers Chrome automatically and prepares
+a dedicated browser; `--chrome PATH` overrides discovery. Installing the skill alone does
+not install Go, the CLI, or Chrome.
 
 To inspect before installation, use
 `gh skill preview snowmerak/cdp-q-driver cdp-q-driver`. For a reproducible install,
@@ -77,11 +84,12 @@ without publishing a release with `gh skill publish --dry-run`.
 
 ## CLI sessions
 
-First [start a dedicated debugging browser](#try-it). With its CDP endpoint
-ready, select a session and open a named page:
+Select a session and open a page. The CLI finds Chrome, creates a dedicated
+persistent profile, starts the browser, selects a loopback CDP port, waits for
+readiness, and opens the named page:
 
 ```powershell
-.\cdp-q-driver.exe --session work --endpoint http://127.0.0.1:9222 page new --name main https://example.com
+.\cdp-q-driver.exe --session work page new --name main https://example.com
 .\cdp-q-driver.exe --session work page list
 .\cdp-q-driver.exe --session work page snapshot main
 .\cdp-q-driver.exe --session work session info
@@ -89,10 +97,28 @@ ready, select a session and open a named page:
 .\cdp-q-driver.exe --session work stop
 ```
 
+The default browser has a visible window; add `--headless` for unattended use.
+Explicit `--chrome PATH`/`--endpoint URL` settings take precedence, followed by
+saved session settings, `QDRIVER_CHROME`, PATH, and standard OS installation
+locations. Discovery checks Chrome/Chromium, not personal profiles or running
+debugging ports. If none is found, the error asks for an executable or endpoint.
+A selected but invalid explicit/saved/environment path reports an error instead
+of silently choosing another browser.
+
+To choose a particular Windows installation, pass
+`--chrome 'C:\Program Files\Google\Chrome\Application\chrome.exe'` before the
+command. On macOS, pass the executable inside the app bundle, for example
+`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`; on Linux, pass
+the installed Chrome/Chromium executable. To attach to an already running
+debugging browser instead, use `--endpoint http://127.0.0.1:9222` in place of
+`--chrome PATH`. These modes are mutually exclusive.
+
 The first task/page/event command creates the selected session when absent.
 Later calls reuse its running control process, page aliases, refs, and armed
-subscriptions. A successful first start saves the endpoint and SDK timeouts, so
-future starts can omit `--endpoint`. `start` and `session ensure` explicitly get
+subscriptions. A successful first start saves the Chrome path/headless setting
+or external endpoint, along with SDK timeouts. Automatically discovered Chrome
+paths are saved too. Future starts omit these flags.
+`start` and `session ensure` explicitly get
 or create a session. `status`, `stop`, `session info`, and `session list` inspect
 or stop sessions without creating one. The default session ID is `default`.
 Global flags precede the command, and command flags precede positional arguments.
@@ -106,12 +132,15 @@ Global flags precede the command, and command flags precede positional arguments
 | `page snapshot PAGE` | Observe a page and obtain opaque CLI refs. |
 | `page fill --ref REF PAGE TEXT`, `page click --ref REF PAGE` | Act on exact nodes delivered by a snapshot. |
 | `events arm --kind KIND PAGE`, `events next SUBSCRIPTION` | Prepare an event before its trigger, then wait independently. |
-| `stop` | Close owned tabs, release borrowed tabs, and stop the selected control process. |
+| `stop` | Clean up the selected session and stop its control process; also close Chrome when this session launched it. |
 
 Different sessions can each have a page called `main`. Each session's `page list`
 shows its managed tabs; `--all` includes external targets. Stopping a session
-cleans up only its SDK resources. Sessions attached to the same browser context
-share cookies and site storage.
+cleans up its SDK resources; in `--chrome` mode it also closes its dedicated
+browser, including any retained/released/manually opened tabs in that profile.
+The profile remains on disk, preserving logins/site storage for later starts.
+Each `--chrome` session has its own profile. Sessions attached with `--endpoint`
+to the same browser context share cookies and site storage.
 
 Session data is stored beneath `sessions/<ID>/` in the application data root:
 
@@ -121,10 +150,12 @@ Session data is stored beneath `sessions/<ID>/` in the application data root:
 | macOS | `~/Library/Application Support/cdp-q-driver` |
 | Linux | `$XDG_DATA_HOME/cdp-q-driver`, or `~/.local/share/cdp-q-driver` |
 
-`session.json` keeps connection settings, the last-observed Task/page grouping,
+`session.json` keeps connection/Chrome launch settings, the last-observed Task/page grouping,
 and the latest cleanup report. `runtime.json` holds the running process's local
 address and authentication capability; stop removes that runtime file while
-preserving the saved session. `--data-dir DIRECTORY` overrides the application
+preserving the saved session. Managed Chrome also uses `chrome-profile/`,
+`chrome-*.log`, and a `browser.lock` while owned by the control process.
+`--data-dir DIRECTORY` overrides the application
 data root. Keep these files private because connection settings may contain
 credentials. See the [CLI guide](docs/cli.md) for path fallbacks, ID rules, and the
 legacy explicit-file `--state FILE` mode.
@@ -136,6 +167,10 @@ page; copying a ref between sessions or across restarts fails explicitly.
 Abrupt termination can leave a stale runtime file: confirm its recorded process
 has exited before removing that exact file. The CLI never automatically replays
 a browser mutation after an uncertain response.
+An abrupt control-process crash can leave its managed Chrome and `browser.lock`
+behind. Confirm the recorded control/browser processes have exited before
+removing the exact stale runtime/lock files; the CLI will not guess or kill a
+process from cached metadata. The persistent profile is never deleted by stop.
 
 ## Try it
 
@@ -351,6 +386,13 @@ Named-session tests cover first-use creation, saved configuration after stop,
 independent page/task grouping on a shared browser, scoped/default vs all-tab
 listing, cross-session refs, endpoint/timeout conflicts, concurrent creation,
 app-data metadata, validation without process creation, and portable OS path rules.
+
+Managed-browser tests exercise Chrome-path-only startup, cross-invocation
+snapshot/ref input, concurrent first use, saved path/mode reuse, persistent site
+storage, mode conflicts, failed-start cleanup, and owned-browser shutdown.
+Discovery tests cover ordered PATH/OS candidates, environment overrides,
+missing-browser errors, saved-settings precedence, and actual CLI startup
+without a Chrome path or CDP endpoint.
 
 ## Design
 

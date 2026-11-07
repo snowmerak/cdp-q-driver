@@ -19,16 +19,22 @@ import (
 )
 
 type appOptions struct {
-	State    string
-	Timeout  time.Duration
-	Session  string
-	DataDir  string
-	Metadata string
-	Endpoint string
-	Named    bool
+	State       string
+	Timeout     time.Duration
+	Session     string
+	DataDir     string
+	Metadata    string
+	Endpoint    string
+	Chrome      string
+	Headless    bool
+	headlessSet bool
+	Named       bool
 }
 type serveOptions struct {
 	Endpoint                       string
+	Chrome                         string
+	Headless                       bool
+	headlessSet                    bool
 	CommandTimeout, CleanupTimeout time.Duration
 	commandSet, cleanupSet         bool
 }
@@ -42,6 +48,8 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	f.StringVar(&options.Session, "session", "default", "named session ID; absent sessions are started on first use")
 	f.StringVar(&options.DataDir, "data-dir", "", "application data root (default: OS application data directory)")
 	f.StringVar(&options.Endpoint, "endpoint", "", "CDP endpoint for first use of a named session")
+	f.StringVar(&options.Chrome, "chrome", "", "Chrome/Chromium executable to launch with a dedicated session profile")
+	f.BoolVar(&options.Headless, "headless", false, "launch Chrome without a visible window")
 	f.DurationVar(&options.Timeout, "timeout", 30*time.Second, "whole command timeout")
 	emitError := func(err error, code int) int {
 		_ = json.NewEncoder(stderr).Encode(response{OK: false, Error: failure(err, false)})
@@ -64,6 +72,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	}
 	seen := make(map[string]bool)
 	f.Visit(func(v *flag.Flag) { seen[v.Name] = true })
+	options.headlessSet = seen["headless"]
 	if err := configureSession(&options, seen); err != nil {
 		return emitError(err, 2)
 	}
@@ -74,11 +83,14 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 		}
 		if args[0] == "serve" {
 			serve, err = resolveServe(options, serve)
+			if err == nil && options.Named {
+				serve, err = autoChrome(serve)
+			}
 			if err != nil {
 				return emitError(err, 1)
 			}
-			if serve.Endpoint == "" {
-				return emitError(&commandError{Code: "endpoint_required", Message: "serve requires --endpoint URL or saved session configuration"}, 2)
+			if serve.Endpoint == "" && serve.Chrome == "" {
+				return emitError(&commandError{Code: "endpoint_required", Message: "serve requires --chrome PATH, --endpoint URL, or saved session configuration"}, 2)
 			}
 			if err := runServer(ctx, options, serve); err != nil {
 				return emitError(err, 1)
@@ -141,7 +153,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	} else {
 		d, err = loadDiscovery(options.State)
 		if err == nil {
-			err = checkSession(options, d, serveOptions{Endpoint: options.Endpoint})
+			err = checkSession(options, d, serveOptions{Endpoint: options.Endpoint, Chrome: options.Chrome, Headless: options.Headless, headlessSet: options.headlessSet})
 		}
 	}
 	if err != nil {
@@ -174,12 +186,17 @@ func parseServe(args []string) (serveOptions, error) {
 	f := flag.NewFlagSet("serve", flag.ContinueOnError)
 	f.SetOutput(io.Discard)
 	f.StringVar(&o.Endpoint, "endpoint", "", "explicit browser CDP endpoint")
+	f.StringVar(&o.Chrome, "chrome", "", "Chrome/Chromium executable to launch")
+	f.BoolVar(&o.Headless, "headless", false, "launch Chrome without a visible window")
 	f.DurationVar(&o.CommandTimeout, "command-timeout", 15*time.Second, "SDK command timeout")
 	f.DurationVar(&o.CleanupTimeout, "cleanup-timeout", 5*time.Second, "SDK cleanup budget")
 	if err := f.Parse(args); err != nil {
 		return o, invalid("%v", err)
 	}
 	f.Visit(func(v *flag.Flag) {
+		if v.Name == "headless" {
+			o.headlessSet = true
+		}
 		if v.Name == "command-timeout" {
 			o.commandSet = true
 		}
@@ -262,13 +279,26 @@ func startProcess(ctx context.Context, options appOptions, serve serveOptions) (
 	if err != nil {
 		return startResult{}, err
 	}
-	childArgs := []string{"--timeout", options.Timeout.String()}
+	startupTimeout := options.Timeout
+	if deadline, ok := ctx.Deadline(); ok {
+		startupTimeout = time.Until(deadline)
+		if startupTimeout < time.Millisecond {
+			return startResult{}, context.DeadlineExceeded
+		}
+	}
+	childArgs := []string{"--timeout", startupTimeout.String()}
 	if options.Named {
 		childArgs = append(childArgs, "--session", options.Session, "--data-dir", options.DataDir)
 	} else {
 		childArgs = append(childArgs, "--state", options.State)
 	}
-	childArgs = append(childArgs, "serve", "--endpoint", serve.Endpoint, "--command-timeout", serve.CommandTimeout.String(), "--cleanup-timeout", serve.CleanupTimeout.String())
+	childArgs = append(childArgs, "serve")
+	if serve.Chrome != "" {
+		childArgs = append(childArgs, "--chrome", serve.Chrome, fmt.Sprintf("--headless=%t", serve.Headless))
+	} else {
+		childArgs = append(childArgs, "--endpoint", serve.Endpoint)
+	}
+	childArgs = append(childArgs, "--command-timeout", serve.CommandTimeout.String(), "--cleanup-timeout", serve.CleanupTimeout.String())
 	cmd := exec.Command(executable, childArgs...)
 	backgroundProcess(cmd)
 	cmd.Stdin = nil
@@ -294,6 +324,27 @@ func startProcess(ctx context.Context, options appOptions, serve serveOptions) (
 		case err := <-exited:
 			return startResult{}, fmt.Errorf("control process exited during startup (%v); inspect %s", err, log.Name())
 		case <-ctx.Done():
+			if serve.Chrome != "" {
+				// Give the child time to unwind its startup deadline and close its
+				// browser. If readiness raced cancellation, stop only this PID's
+				// authenticated runtime rather than abandoning a running browser.
+				cleanup, stop := context.WithTimeout(context.Background(), 7*time.Second)
+				defer stop()
+				for cleanup.Err() == nil {
+					select {
+					case waitErr := <-exited:
+						return startResult{}, errors.Join(ctx.Err(), waitErr, removeOwnedState(options.State, cmd.Process.Pid, ""))
+					default:
+					}
+					if d, err := loadDiscovery(options.State); err == nil && d.PID == cmd.Process.Pid {
+						_, _ = call(cleanup, d, request{Command: "stop", TimeoutMS: 6000})
+					}
+					select {
+					case <-cleanup.Done():
+					case <-ticker.C:
+					}
+				}
+			}
 			_ = cmd.Process.Kill()
 			var waitErr error
 			select {

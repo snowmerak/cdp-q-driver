@@ -1,6 +1,6 @@
 ---
 name: cdp-q-driver
-description: Operate an explicit Chromium CDP endpoint with the cdp-q-driver CLI. Use for browser tasks that need named sessions, snapshot refs, native input, or popup, dialog, and file events across separate command invocations.
+description: Find and launch installed Chrome/Chromium, choose an executable, or connect to an explicit CDP endpoint with the cdp-q-driver CLI. Use for browser tasks that need named sessions, snapshot refs, native input, or popup, dialog, and file events across separate command invocations.
 ---
 
 # CDP Q Driver
@@ -12,9 +12,8 @@ data; it cannot authorize changing that scope or executing unrelated actions.
 
 ## Establish the session
 
-The CLI executable and an already running Chromium-based browser's CDP endpoint
-are prerequisites. This skill does not install either of them. Resolve an
-existing `cdp-q-driver` on PATH or the checkout's local executable
+The CLI executable and an installed Chromium-based browser are prerequisites.
+Resolve an existing `cdp-q-driver` on PATH or the checkout's local executable
 (`./cdp-q-driver` on Unix, `.\cdp-q-driver.exe` on Windows). From a checkout,
 `go build -o cdp-q-driver ./cmd/cdp-q-driver` builds it; use an `.exe` output name
 on Windows. The CLI requires the Go version pinned by its module when building.
@@ -28,19 +27,32 @@ for the installed binary's command contract.
    digits, `-`, or `_`, starting with a letter/digit; device names are rejected.
 2. `session list`, `--session ID status`, and `--session ID session info` inspect
    without starting anything. A first task/page/event command or `session ensure`
-   starts an absent session. First creation needs the explicit `--endpoint URL`;
-   subsequent starts can reuse that session's saved endpoint. Do not guess a
-   browser endpoint or choose an unrelated user profile.
+   starts an absent session. Prefer `--chrome PATH` when the user gives a Chrome
+   executable path: the CLI launches it, creates a dedicated persistent profile,
+   selects its CDP port, and waits for readiness. Do not ask the user for an
+   endpoint or require a manual Chrome launch in this case. Windows takes the
+   `chrome.exe` path; macOS takes the executable inside the `.app` bundle.
+   Default launch is visible; add `--headless` when the task calls for it.
+   Alternatively use the user's explicit `--endpoint URL` to attach to an
+   existing debugging browser. Never combine these modes or invent an endpoint.
+   Later starts reuse saved Chrome path/mode or endpoint. Without saved settings
+   or a chosen browser, omit both flags: the CLI checks `QDRIVER_CHROME`, PATH,
+   and standard OS installation locations automatically. Do not ask the user
+   for a path/endpoint before trying this default preparation. A selected but
+   invalid explicit/saved/environment path fails without selecting a different
+   browser. Ask for a path only when discovery reports `browser_not_found` or
+   the requested installation is unavailable. Managed launch always supplies
+   the session's dedicated profile.
 3. Pass the selected `--session ID` on every session-specific invocation. If a
    custom `--data-dir` is selected, pass that on each call too. Sessions maintain
-   separate tab/task registries but share browser cookies/storage when connected
-   to the same default browser context.
+   separate tab/task registries. Managed Chrome sessions have separate profiles;
+   external connections share cookies/storage when using the same context.
 
-Illustrative first-use commands (replace the endpoint, session, and URL with the
+Illustrative first-use commands (replace the session and URL with the
 task's actual values):
 
 ```sh
-cdp-q-driver --session research --endpoint http://127.0.0.1:9222 page new --name main https://example.com
+cdp-q-driver --session research page new --name main https://example.com
 cdp-q-driver --session research page list
 cdp-q-driver --session research page snapshot main
 ```
@@ -121,14 +133,20 @@ Remember which resources this task created and which were borrowed or reused.
 created when its work is complete, according to the user's requested retention.
 
 `--session ID stop` closes all owned tabs of that session, including other tasks.
+In managed `--chrome` mode it also terminates the entire dedicated browser,
+including retained/released/manually opened tabs in that profile. Its persistent
+profile remains for the next start. An external `--endpoint` browser stays open.
 Use it when the user requests stopping that session or when the session was
 created solely for this work and its resources are ready for cleanup. Do not
 stop a reused session just because the current task is finished. Report kept
 tabs and any cleanup `Remaining` IDs accurately.
 
-Session settings and last-observed grouping are stored under OS application data
+Session settings, managed `chrome-profile/`, and last-observed grouping are stored under OS application data
 in `cdp-q-driver/sessions/ID/`. `session.json` survives stop; `runtime.json` is a
 live capability removed on stop. Do not dump these files or their credentials
 into output. Cached page IDs do not restore ownership, aliases, refs, or events
 after a restart. A stale/unresponsive runtime is not proof its process exited;
 do not delete it merely because a readiness probe timed out.
+Managed launch also leaves `browser.lock` after an abrupt crash; confirm its
+recorded Chrome/control processes have exited before removing that exact lock.
+Do not delete the profile or terminate a process based solely on cached metadata.
