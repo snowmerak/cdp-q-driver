@@ -20,10 +20,19 @@ func (p *Page) WaitForSelector(ctx context.Context, locator Locator) error {
 				return false, nil
 			}
 			if err != nil {
+				// A frame can disappear between discovery and the AX/DOM query.
+				// Retry only this observation for selector-based waits. Ref waits
+				// keep their exact-node failure semantics; no input is dispatched.
+				if locator.ref.page == nil && frameLifecycleError(err) {
+					return false, nil
+				}
 				return false, err
 			}
 			defer p.releaseObject(ctx, node.session, node.object)
 			state, err := p.inspectElement(ctx, t, node, "inspect")
+			if err != nil && locator.ref.page == nil && frameLifecycleError(err) {
+				return false, nil
+			}
 			return state.Visible, err
 		})
 	}))

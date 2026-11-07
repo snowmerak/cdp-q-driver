@@ -371,3 +371,27 @@ func TestBorrowedPageKeepsOOPIFsOnRelease(t *testing.T) {
 		}
 	}
 }
+
+func TestWaitForSelectorDuringOOPIFChurn(t *testing.T) {
+	f := startFrameChrome(t)
+	b := attachDriver(t, f.endpoint)
+	p := makeFrameFixture(t, b)
+	if _, err := p.Evaluate(t.Context(), `(()=>{
+	 const first=document.querySelector('#remote'),host=first.parentElement,template=first.cloneNode(false);let n=0;
+	 const timer=setInterval(()=>{
+	   document.querySelector('#remote')?.remove();const child=template.cloneNode(false);
+	   child.src=template.src+'?v='+(++n===12?'ready':n);host.prepend(child);
+	   if(n===12)clearInterval(timer);
+	 },16);
+	})()`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	if err := p.WaitForSelector(ctx, qdriver.Text("Version ready")); err != nil {
+		t.Fatalf("frame replacement escaped an observational wait: %v", err)
+	}
+	if remote := frameByName(t, p, "remote"); !remote.OutOfProcess {
+		t.Fatal("churn fixture lost its OOPIF topology")
+	}
+}

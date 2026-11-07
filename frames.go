@@ -143,7 +143,7 @@ func frameLifecycleError(err error) bool {
 		return true
 	}
 	message := strings.ToLower(err.Error())
-	for _, part := range []string{"no target with given id", "session with given id not found", "cannot find context with specified id", "cannot find default execution context", "frame with the given", "no frame with given id", "inspected target navigated"} {
+	for _, part := range []string{"no target with given id", "session with given id not found", "cannot find context with specified id", "cannot find default execution context", "frame with the given", "no frame with given id", "no frame for given id", "inspected target navigated"} {
 		if strings.Contains(message, part) {
 			return true
 		}
