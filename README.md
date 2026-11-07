@@ -18,6 +18,11 @@ condition waits, native input, and extraction in one async JavaScript workflow.
 Only `run` needs Node.js; the Go SDK and other CLI commands remain standalone.
 See [JavaScript workflows](docs/javascript.md) for the session API and examples.
 
+Other Go applications can embed this entire CLI as a subcommand, such as
+`q cdp ...`, through the public [`cli`](cli/cli.go) package. No separate driver
+executable is required. See [embedding the CLI](docs/embedding.md), including
+the command prefix needed for background sessions to re-exec the host correctly.
+
 The first four milestones implement tab lifecycle management, frame-aware observation/input, and event/file workflows. Launch a dedicated browser or connect to an explicit endpoint, capture semantic snapshots across iframe/OOPIF and open shadow-root boundaries, select exact nodes by opaque refs or CSS/text/role, and verify input results. Prepare subscriptions before triggering popups, dialogs, file choosers, downloads, or network requests. SDK cleanup preserves borrowed tabs and the external browser; stopping a CLI-managed Chrome session also terminates its dedicated browser.
 
 Closed shadow roots and non-axis-aligned frame transforms are not supported.

@@ -22,6 +22,13 @@ Examples below assume the executable is on PATH. Global flags precede the
 command; command flags precede positional arguments. Use `cdp-q-driver help`
 for the installed binary's command contract.
 
+If the user selects an embedded host command such as `q cdp`, use that prefix
+in place of `cdp-q-driver` for every invocation, including help, run, and stop.
+Keep global flags after the complete prefix: `q cdp --session ID page list`.
+The embedded CLI has the same session/ref/output semantics; it does not need a
+separate driver executable. Verify the chosen host's help exposes this command
+before using it. Node.js is still required only for `run`.
+
 1. Reuse a user-selected session. If choosing one for this task, use a portable,
    task-specific ID and report it. IDs contain 1..64 lowercase ASCII letters,
    digits, `-`, or `_`, starting with a letter/digit; device names are rejected.

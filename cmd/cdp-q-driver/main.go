@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/snowmerak/cdp-q-driver/internal/cli"
+	"github.com/snowmerak/cdp-q-driver/cli"
 )
 
 func main() {

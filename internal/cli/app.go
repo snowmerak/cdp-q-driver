@@ -19,17 +19,18 @@ import (
 )
 
 type appOptions struct {
-	State       string
-	Timeout     time.Duration
-	Session     string
-	DataDir     string
-	Metadata    string
-	Endpoint    string
-	Chrome      string
-	Headless    bool
-	InputMode   string
-	headlessSet bool
-	Named       bool
+	State         string
+	Timeout       time.Duration
+	Session       string
+	DataDir       string
+	Metadata      string
+	Endpoint      string
+	Chrome        string
+	Headless      bool
+	InputMode     string
+	CommandPrefix []string // Host subcommand tokens used when re-executing serve.
+	headlessSet   bool
+	Named         bool
 }
 type serveOptions struct {
 	Endpoint                       string
@@ -43,9 +44,15 @@ type serveOptions struct {
 
 // Main writes machine-readable results to stdout and errors to stderr.
 func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return MainWithPrefix(ctx, args, stdin, stdout, stderr, nil)
+}
+
+// MainWithPrefix preserves an embedding host's dispatch path when starting a
+// background process. Args have already had these prefix tokens removed.
+func MainWithPrefix(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, prefix []string) int {
 	f := flag.NewFlagSet("cdp-q-driver", flag.ContinueOnError)
 	f.SetOutput(io.Discard)
-	var options appOptions
+	options := appOptions{CommandPrefix: append([]string(nil), prefix...)}
 	f.StringVar(&options.State, "state", "", "explicit legacy runtime file; mutually exclusive with --session/--data-dir")
 	f.StringVar(&options.Session, "session", "default", "named session ID; absent sessions are started on first use")
 	f.StringVar(&options.DataDir, "data-dir", "", "application data root (default: OS application data directory)")
@@ -306,7 +313,7 @@ func startProcess(ctx context.Context, options appOptions, serve serveOptions) (
 			return startResult{}, context.DeadlineExceeded
 		}
 	}
-	childArgs := []string{"--timeout", startupTimeout.String()}
+	childArgs := append(append([]string{}, options.CommandPrefix...), "--timeout", startupTimeout.String())
 	if options.Named {
 		childArgs = append(childArgs, "--session", options.Session, "--data-dir", options.DataDir)
 	} else {

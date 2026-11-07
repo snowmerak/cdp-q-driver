@@ -9,6 +9,11 @@ Session configuration, managed browser profiles, and last-observed task/page
 grouping live in the OS application data directory. The optional `run` command
 executes JavaScript workflows using this CLI's session API.
 
+Go hosts can embed the identical CLI as a subcommand (for example `q cdp`)
+through `github.com/snowmerak/cdp-q-driver/cli`. Replace the executable prefix
+in the examples with the selected host command. See
+[embedding the CLI](embedding.md) for dispatch and background re-execution.
+
 ## JavaScript workflows
 
 With Node.js 18+ on PATH:

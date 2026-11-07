@@ -30,7 +30,10 @@ type cliReply struct {
 		MayHaveEffects bool   `json:"mayHaveEffects"`
 	} `json:"error"`
 }
-type cliFixture struct{ binary, state, dataDir, session string }
+type cliFixture struct {
+	binary, state, dataDir, session string
+	prefix                          []string
+}
 
 func buildCLI(t *testing.T) *cliFixture {
 	t.Helper()
@@ -54,7 +57,7 @@ func buildCLI(t *testing.T) *cliFixture {
 	return f
 }
 func (f *cliFixture) command(ctx context.Context, args ...string) (cliReply, error) {
-	prefix := []string{"--timeout", "8s"}
+	prefix := append(append([]string{}, f.prefix...), "--timeout", "8s")
 	if f.session != "" {
 		prefix = append(prefix, "--data-dir", f.dataDir, "--session", f.session)
 	} else {
