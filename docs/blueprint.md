@@ -1,6 +1,6 @@
 # cdp-q-driver 기반 블루프린트
 
-상태: M1–M4 구현·검증 완료 · 갱신일: 2026-11-07 (Asia/Seoul)
+상태: M1–M4 및 후속 CLI 구현·검증 완료 · 갱신일: 2026-11-07 (Asia/Seoul)
 
 대상 독자는 이 저장소를 구현하거나 검토하는 개발자다. 이 문서는 프로젝트의 목적, 범위, 책임과 구현 순서를 관리한다. 현재 구현과 후속 설계를 구분하며 정확한 공개 API는 Go 코드와 해당 테스트가 소유한다. 목적, 주요 경계, 완료 기준이나 핵심 위험이 바뀌면 이 문서를 갱신한다.
 
@@ -18,7 +18,7 @@
 | --- | --- |
 | 저장소 | `github.com/snowmerak/cdp-q-driver` |
 | Go 모듈 | 초기화 완료, `go.mod`의 Go 버전은 `1.27.3` |
-| 구현 | M1 탭 수명, M2 관찰·입력, M3 iframe·OOPIF·open shadow DOM·subtree·text/role, M4 popup·dialog·파일·이벤트 구독·network idle, 실행 예제 4개 구현. `chromedp v0.23.0`·`cdproto v0.159.0` 사용 |
+| 구현 | M1 탭 수명, M2 관찰·입력, M3 iframe·OOPIF·open shadow DOM·subtree·text/role, M4 popup·dialog·파일·이벤트 구독·network idle, 실행 예제 4개 및 상태 유지 CLI 구현. `chromedp v0.23.0`·`cdproto v0.159.0` 사용 |
 | 연구 | 공개 Ego SDK 분석과 설치된 Ego의 자체 HTML 실험 완료 |
 | 검증 | Windows/ARM64, Go 1.27.3, Chrome 156.0.8078.80, CDP 1.3에서 실제 브라우저 통합 테스트 통과 |
 | 검증 한계 | closed shadow root, 회전·기울임·원근·반전된 iframe은 미지원. 파일은 Chrome과 공유 경로가 필요하고 다운로드 정책은 default context 전체에 영향. idle은 attach 후 관측 요청만 추적하며 frame/session 변경 시 기존 대기를 실패 처리. 현재 플랫폼의 race detector는 미지원 |
@@ -27,7 +27,7 @@
 
 ## 2. 사용자와 성공 조건
 
-주 사용자는 Go 애플리케이션 개발자와 에이전트 실행기를 만드는 개발자다. 호출자가 브라우저와 작업의 수명을 제어하며, 모델 호출이나 업무별 성공 판단은 호출자에게 남긴다.
+주 사용자는 Go 애플리케이션 개발자, 에이전트 실행기를 만드는 개발자, 터미널에서 브라우저를 조작하는 사용자다. 호출자가 브라우저와 작업의 수명을 제어하며, 모델 호출이나 업무별 성공 판단은 호출자에게 남긴다.
 
 대표 흐름은 다음과 같다.
 
@@ -54,9 +54,11 @@
 - 명시적인 대기, popup·JavaScript dialog·파일 업로드·다운로드 처리.
 - 호출별 `context`와 전송 상태를 포함한 오류, 제한된 이벤트 구독.
 
+첫 SDK 범위 이후 사용자 요청으로 루트의 `cmd/cdp-q-driver`에 CLI 실행 앱을 추가했다. 기존 루트 package와 SDK import 경로는 유지한다. 별도 호출 간 상태 유지와 동일 SDK 기능 제어를 제공하며 세부 명령·설정·실행 계약은 [영문 CLI 가이드](cli.md)에 있다.
+
 ### 첫 제품 이후 후보
 
-- 별도 CLI와 장기 실행 프로세스, 호출 간 작업·페이지 라벨 유지.
+- CLI의 crash recovery, 작업·페이지 소유권의 영속 ledger와 재개.
 - 제품의 브라우저 실행 관리와 지속 프로필 선택.
 - 독립 BrowserContext를 이용한 작업별 저장소 격리.
 - 협력적 handoff와 재개, UI 또는 확장 기능을 통한 사용자 제어 연동.
@@ -72,11 +74,11 @@
 
 ## 4. 기본 설계 방향
 
-아래는 설계의 기본 선택이다. M1–M3 수명·관찰·입력·프레임 확장은 구현됐고 이벤트·파일 워크플로는 후속 제안이다. 실제 제약이 확인되면 이유와 영향을 기록하고 수정한다.
+아래는 설계의 기본 선택이다. M1–M4의 수명·관찰·입력·프레임·이벤트·파일 워크플로와 후속 CLI가 구현됐다. 실제 제약이 확인되면 이유와 영향을 기록하고 수정한다.
 
 | 선택 | 이유와 영향 |
 | --- | --- |
-| 단일 Go 라이브러리로 시작 | 별도 서버 없이 핵심 흐름을 검증한다. CLI 지속 실행은 이후 추가 가능하다. |
+| Go SDK와 이를 재사용하는 CLI | SDK는 서버 없이 사용한다. CLI는 호출 간 ref·소유권을 유지하는 로컬 제어 프로세스를 별도로 실행한다. |
 | `chromedp`·`cdproto` 기반 CDP 어댑터를 우선 검증 | transport·타입·세션 기능을 재사용한다. 정확한 버전은 첫 연결 검증에서 고정한다. |
 | 공개 API에서 CDP 라이브러리 타입을 감춘다 | snapshot·ref·action 의미를 프로젝트가 소유한다. |
 | Go에서 orchestration, 페이지에서는 필요한 JS 함수 실행 | 호스트 Node 없이 DOM 상태·좌표·편집 동작을 처리한다. |
@@ -93,6 +95,8 @@
 ```mermaid
 flowchart TB
     Caller[Go application / agent host] --> API[Public SDK]
+    CLI[CLI invocation] --> Local[Authenticated loopback session process]
+    Local --> API
     API --> Coordinator[Page operation coordinator]
     API --> Tasks[Task and page ownership]
     Coordinator --> Observe[Snapshot builder]
@@ -123,7 +127,17 @@ flowchart TB
 | 입력·대기 | 상태·좌표 검사, 입력, 이벤트 기반 대기 | 애플리케이션의 업무 성공을 추정하지 않는다. |
 | CDP 어댑터 | 하부 연결·명령·이벤트·종료를 SDK 의미에 연결 | 하부 라이브러리가 소유하는 요청 라우터를 중복 구현하지 않는다. |
 
-공개 package 이름은 `qdriver`다. M1의 공개 타입과 진입점은 모듈 루트에 있다. 실제로 책임이 분리될 때 `internal/` 아래에 어댑터·프레임·ref·관찰·액션 구현을 나눈다. 처음부터 모든 표의 항목을 독립 package나 interface로 만들 필요는 없다.
+공개 package 이름은 `qdriver`다. 공개 SDK 타입과 진입점은 모듈 루트에 있다. CLI 앱은 `cmd/cdp-q-driver`, 로컬 client/server·명령 파싱·핸들 관리는 `internal/cli`가 소유하며 SDK를 직접 재사용한다. SDK 내부를 CLI 도입만을 위해 재배치하지 않는다.
+
+CLI는 `--session ID`로 독립적인 Task·페이지 그룹을 선택한다. 세션이 없으면 첫 task/page/event 호출에서 hidden/detached 제어 프로세스를 생성하고, 있으면 인증된 readiness를 확인해 재사용한다. 첫 호출의 명시적인 CDP endpoint와 SDK 설정을 저장해 중지 후 새 프로세스에서도 사용한다. `start`와 `session ensure`도 동일한 get-or-create를 제공하고 `serve`는 foreground 실행이다. status·stop·session info/list는 프로세스를 생성하지 않는다. 여러 첫 호출은 O_EXCL runtime 예약의 승자에게 합류하고 원래 브라우저 명령은 한 번만 보낸다.
+
+OS 앱 데이터 경로는 Windows LOCALAPPDATA, macOS Library/Application Support, Linux XDG_DATA_HOME 또는 ~/.local/share 아래의 cdp-q-driver다. `sessions/<ID>/session.json`에는 설정과 마지막 관측 Task·탭 그룹 및 cleanup 보고서를 atomic replace로 기록한다. `runtime.json`에는 loopback 주소·프로세스/세대 ID·무작위 token을 두고 종료 시 제거한다. 세션 ID는 경로 탈출과 OS 예약 이름을 거절한다. `--data-dir`은 앱 데이터 루트를 변경하고 기존 `--state` 수동 모드는 별도로 유지한다.
+
+Task·ref·구독의 권위는 실행 중 프로세스 메모리에 둔다. 저장한 탭 목록은 관측 기록이며 브라우저 상태나 crash recovery의 소유권 근거로 사용하지 않는다. 같은 세션 ID로 재시작해도 ref·이벤트 큐·이전 탭은 자동 복원하지 않고 새로운 세대를 발급한다. 같은 브라우저에 연결한 세션 사이의 쿠키·저장소는 공유된다. loopback의 ephemeral TCP listener와 runtime 파일의 token으로 인증한다. 페이지 내용·ref는 metadata에 저장하지 않으며 startup log는 기동·종료 오류의 진단용이다.
+
+CLI 작업·페이지·ref 변경은 coordinator gate로 순서화하고 event Next·download wait/save·network idle의 대기 구간은 이 gate 밖에서 실행한다. subscription 준비 때 RPC 취소와 setup을 연결하되 성공 후에는 제어 프로세스 수명으로 넘겨 다음 호출까지 유지한다. CLI ref는 세션 세대·페이지·SDK ref를 함께 식별하며, 다른 페이지·재시작 전 ref를 새 대상에 재지정하지 않는다.
+
+성공·오류는 JSON envelope와 exit code로 전달하고 SDK의 receipt·MayHaveEffects·오류 종류를 보존한다. transport 실패 후 명령을 자동 재전송하지 않는다. stop은 SDK 정리 뒤 listener와 자기 소유 상태 파일을 폐기한다. Windows에서 클라이언트가 상태 파일을 읽는 짧은 경합은 소유권을 재검사하는 제한된 삭제 재시도로 처리한다. 비정상 종료 후의 상태 파일 제거와 탭 재편입은 명시적인 사용자 복구이며 자동 소유권 복원이 아니다.
 
 ## 6. 주요 모델과 API 형태
 
@@ -256,7 +270,7 @@ M3는 [프레임 발견·세션](../frames.go), [좌표·상위 프레임 hit-te
 
 M3 검증은 loopback에 매핑한 세 사이트와 site-per-process에서 실제 iframe target을 확인하고, sibling/nested OOPIF·같은 프로세스 중첩 iframe의 native 입력과 결과를 검사한다. iframe 재탐색·제거·renderer 교체, 관련 없는 ref 보존, child-frame 중복 거절, subtree, 중첩 open shadow·slot, closed root 및 그 안의 iframe 내용 제외, 외부 탭과 OOPIF 반환, frame 용량 제한을 확인했다. renderer-local backend ID 충돌은 별도 결정적인 단위 테스트로 재현한다. 현재 프레임 상한은 페이지당 기본 128개이며 초과 시 `ErrFrameLimit`을 반환한다. 이전 브라우저의 parentFrameId 메타데이터 호환성은 추가 검증 대상이다.
 
-M2는 제한된 단일 문서 MVP다. M3를 통과해야 iframe을 포함한 에이전트용 드라이버의 핵심 타당성이 검증됐다고 판단한다. M4까지를 이 블루프린트의 첫 제품 범위로 둔다. CLI·영속 상태·handoff는 별도 후속 범위로 결정한다.
+M2는 제한된 단일 문서 MVP다. M3를 통과해야 iframe을 포함한 에이전트용 드라이버의 핵심 타당성이 검증됐다고 판단한다. M4까지를 첫 SDK 제품 범위로 두었으며 이후 요청된 CLI를 추가했다. 영속 상태·handoff는 별도 후속 범위다.
 
 각 단계에서 관찰한 브라우저·프로토콜·Go·의존성 버전과 실행 환경을 기록한다. M1 실행 기준 환경은 Windows/ARM64다. 다른 OS 지원 여부는 실제 실행 근거와 함께 추가한다.
 
@@ -286,4 +300,8 @@ M2는 제한된 단일 문서 MVP다. M3를 통과해야 iframe을 포함한 에
 
 M4의 실제 Chrome 검증은 독립 구독·소비하지 않은 기대 popup 정리, prompt/confirm/alert와 연속 modal의 이전 핸들 거절, borrowed page의 modal/interception 해제, hidden·multiple·shadow input, chooser 취소·재탐색, 다운로드 완료·취소·exclusive SaveAs·active transfer 정리, failed request·큐 overflow·구독 한도·연결 손실을 포함한다. 실제 OOPIF에서는 popup·chooser·업로드·다운로드·요청의 frame 출처와 frame 제거 시 idle 실패를 확인한다. 실행 예제도 컴파일 후 테스트 소유 브라우저에서 수행한다.
 
-첫 제품 범위인 M1–M4를 마쳤다. 후속 범위는 사용 사례와 별도 합의에 따라 결정하며, CLI·영속 상태·handoff나 성능 수치를 이 완료에 포함하지 않는다.
+첫 SDK 제품 범위인 M1–M4와 후속 CLI를 마쳤다. CLI 검증은 실제 빌드 바이너리의 background/foreground 시작, 호출 간 ref 입력, 잘못된 페이지·이전 세대 ref 거절, iframe locator, task keep/borrow 정리, popup·dialog·chooser·다운로드, 인증·timeout·실패한 startup 및 프로세스/상태 파일 종료를 포함한다. 영속 상태·handoff나 성능 수치는 이 완료에 포함하지 않는다.
+
+named session 확장의 검증은 OS별 앱 데이터 경로, ID 검증, 최초 자동 생성과 동시 생성 합류, 별도 세션의 같은 페이지 이름과 ref 거절, 한 세션 정리 시 다른 세션 보존, 설정·마지막 그룹 목록 저장, 중지 후 저장 endpoint 재사용과 새 ref 세대를 포함한다. 이 metadata 저장은 실행 중 핸들의 영속 복원이나 협력적 handoff 구현을 뜻하지 않는다.
+
+전체 회귀 검증 중 프레임 발견과 AX/DOM 조회 사이의 일시적인 frameId 소멸이 selector 대기 밖으로 전파되는 경로를 보완했다. selector 기반 관찰만 다시 시도하며 ref의 정확한 대상·stale 실패와 입력 비재전송 계약을 유지한다. 실제 OOPIF를 반복 교체한 뒤 안정된 요소를 기다리는 fixture로 확인한다.

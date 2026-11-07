@@ -1,6 +1,14 @@
 # cdp-q-driver
 
-A Go SDK for task-owned Chromium tabs and snapshot-driven input over the Chrome DevTools Protocol (CDP).
+A Go SDK and stateful CLI for task-owned Chromium tabs and snapshot-driven input over the Chrome DevTools Protocol (CDP).
+
+A stateful CLI is available at `cmd/cdp-q-driver`. Select a named session with
+`--session ID`; missing sessions start automatically and reuse their saved CDP
+configuration. Session metadata lives in the OS application data directory.
+Each session keeps tasks, page names, refs, and event subscriptions alive across
+terminal invocations while preserving
+the SDK's existing import path. See the [CLI guide](docs/cli.md) for all commands,
+JSON outcomes, session lifetime, and file/event workflows.
 
 The first four milestones implement tab lifecycle management, frame-aware observation/input, and event/file workflows. Connect to an explicit browser endpoint, capture semantic snapshots across iframe/OOPIF and open shadow-root boundaries, select exact nodes by opaque refs or CSS/text/role, and verify input results. Prepare subscriptions before triggering popups, dialogs, file choosers, downloads, or network requests. Cleanup preserves borrowed tabs and the external browser.
 
@@ -13,6 +21,95 @@ Closed shadow roots and non-axis-aligned frame transforms are not supported.
 - A dedicated browser data directory when starting a debugging browser.
 
 The SDK does not start, install, or discover a user's browser. `Attach` accepts an HTTP(S) discovery URL, such as `http://127.0.0.1:9222`, or a full browser WebSocket URL ending in `/devtools/browser/<id>`. Page WebSocket URLs are rejected.
+
+## Install or build
+
+Add the SDK to an existing Go project:
+
+```sh
+go get github.com/snowmerak/cdp-q-driver
+```
+
+Install the CLI from the current `main` revision:
+
+```sh
+go install github.com/snowmerak/cdp-q-driver/cmd/cdp-q-driver@main
+```
+
+The executable is placed in `GOBIN`, or Go's default binary directory when
+`GOBIN` is unset. Put that directory on `PATH` to invoke `cdp-q-driver` directly.
+To build this checkout into the repository root on Windows:
+
+```powershell
+go build -o cdp-q-driver.exe ./cmd/cdp-q-driver
+.\cdp-q-driver.exe help
+```
+
+On Linux/macOS, use `go build -o cdp-q-driver ./cmd/cdp-q-driver` and run
+`./cdp-q-driver`. From a checkout, `go install ./cmd/cdp-q-driver` also installs
+the local CLI. The module-root package remains importable as the Go SDK.
+
+## CLI sessions
+
+First [start a dedicated debugging browser](#try-it). With its CDP endpoint
+ready, select a session and open a named page:
+
+```powershell
+.\cdp-q-driver.exe --session work --endpoint http://127.0.0.1:9222 page new --name main https://example.com
+.\cdp-q-driver.exe --session work page list
+.\cdp-q-driver.exe --session work page snapshot main
+.\cdp-q-driver.exe --session work session info
+.\cdp-q-driver.exe session list
+.\cdp-q-driver.exe --session work stop
+```
+
+The first task/page/event command creates the selected session when absent.
+Later calls reuse its running control process, page aliases, refs, and armed
+subscriptions. A successful first start saves the endpoint and SDK timeouts, so
+future starts can omit `--endpoint`. `start` and `session ensure` explicitly get
+or create a session. `status`, `stop`, `session info`, and `session list` inspect
+or stop sessions without creating one. The default session ID is `default`.
+Global flags precede the command, and command flags precede positional arguments.
+
+| Command | Purpose |
+| --- | --- |
+| `session list`, `session info` | Inspect saved sessions and the selected session's last-observed inventory. |
+| `task new NAME`, `task finish NAME` | Group pages and clean up the task's owned resources. |
+| `page new --name NAME URL`, `page list` | Open and list managed tabs in the selected session. |
+| `page list --all`, `page adopt --name NAME TARGET_ID` | Find external tabs and explicitly borrow one. |
+| `page snapshot PAGE` | Observe a page and obtain opaque CLI refs. |
+| `page fill --ref REF PAGE TEXT`, `page click --ref REF PAGE` | Act on exact nodes delivered by a snapshot. |
+| `events arm --kind KIND PAGE`, `events next SUBSCRIPTION` | Prepare an event before its trigger, then wait independently. |
+| `stop` | Close owned tabs, release borrowed tabs, and stop the selected control process. |
+
+Different sessions can each have a page called `main`. Each session's `page list`
+shows its managed tabs; `--all` includes external targets. Stopping a session
+cleans up only its SDK resources. Sessions attached to the same browser context
+share cookies and site storage.
+
+Session data is stored beneath `sessions/<ID>/` in the application data root:
+
+| OS | Default application data root |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\cdp-q-driver` |
+| macOS | `~/Library/Application Support/cdp-q-driver` |
+| Linux | `$XDG_DATA_HOME/cdp-q-driver`, or `~/.local/share/cdp-q-driver` |
+
+`session.json` keeps connection settings, the last-observed Task/page grouping,
+and the latest cleanup report. `runtime.json` holds the running process's local
+address and authentication capability; stop removes that runtime file while
+preserving the saved session. `--data-dir DIRECTORY` overrides the application
+data root. Keep these files private because connection settings may contain
+credentials. See the [CLI guide](docs/cli.md) for path fallbacks, ID rules, and the
+legacy explicit-file `--state FILE` mode.
+
+Restarting a saved session creates a new generation. Previously closed tabs,
+live task/page aliases, snapshot refs, and event queues are not restored from
+the observed inventory. Runtime refs are bound to their session generation and
+page; copying a ref between sessions or across restarts fails explicitly.
+Abrupt termination can leave a stale runtime file: confirm its recorded process
+has exited before removing that exact file. The CLI never automatically replays
+a browser mutation after an uncertain response.
 
 ## Try it
 
@@ -208,9 +305,26 @@ Coverage includes tab lifecycle and preservation, cancellation and connection lo
 
 M3 tests use three local `.test` sites mapped to loopback with `--site-per-process`. They verify actual `iframe` targets, sibling/nested OOPIFs, same-process frames, border/scale/scroll coordinates, native clicks and typing, child-frame ambiguity, frame navigation/removal/renderer swaps, iframe/shadow subtrees, nested open shadows and slots, closed-root exclusion (including nested iframes), borrowed-page/OOPIF preservation, and frame limits. A focused unit test forces renderer-local backend ID collisions; real-browser tests verify the resulting targeting behavior.
 
+Selector-based waits tolerate transient frame-lifecycle errors between discovery
+and AX/DOM inspection; a real OOPIF replacement-churn fixture verifies eventual
+visibility. Exact ref failures remain errors, and dispatched input is never replayed.
+
 The implementation has been exercised on Windows/ARM64 with Go 1.27.3 and Chrome 156.0.8078.80 (CDP 1.3). Other platforms have browser discovery helpers but have not been run here. Run `go test -race ./...` on a platform with Go race-detector support.
 
 M4 tests cover independent subscribers, unconsumed popup ownership, modal interruption and chained stale dialog handles, borrowed-page modal/interception cleanup, hidden/multiple/shadow file inputs, chooser selection/cancel/navigation, completed/canceled downloads, exclusive SaveAs, active-transfer cleanup, public-stream overflow alongside network idle, subscription limits, failed requests, actual transport loss, and page/browser closure. Real OOPIF tests verify popup, chooser, upload, download, and request provenance, plus conservative idle failure on frame removal. Same-origin iframe dialogs are exercised without bypassing Chromium's cross-origin modal policy.
+
+CLI tests compile the actual command, start its background and foreground control
+processes, and drive separate invocations against test-owned Chrome. They cover
+snapshot refs across calls, wrong-page/restart rejection, iframe locators,
+exclusive screenshots, task keep/borrow semantics, popup/dialog/chooser/download
+workflows, concurrent event waits, authentication, per-wait cancellation,
+uncertain evaluation outcomes without replay, startup failure, and bounded
+process/discovery-file cleanup.
+
+Named-session tests cover first-use creation, saved configuration after stop,
+independent page/task grouping on a shared browser, scoped/default vs all-tab
+listing, cross-session refs, endpoint/timeout conflicts, concurrent creation,
+app-data metadata, validation without process creation, and portable OS path rules.
 
 ## Design
 
