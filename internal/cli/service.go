@@ -71,6 +71,7 @@ type service struct {
 	sessionID     string
 	store         *sessionStore
 	ownedBrowser  *launchedBrowser
+	inputMode     string
 	closing       atomic.Bool
 }
 
@@ -120,6 +121,7 @@ func (s *service) run(ctx context.Context, r request) (any, error) {
 			state = "closing"
 		}
 		result := map[string]any{"instance": s.instance, "pid": os.Getpid(), "version": protocolVersion, "session": s.sessionID, "state": state}
+		result["inputMode"] = s.inputMode
 		if s.ownedBrowser != nil {
 			result["browser"] = s.ownedBrowser.info()
 		}

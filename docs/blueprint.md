@@ -135,6 +135,8 @@ CLI는 `--session ID`로 독립적인 Task·페이지 그룹을 선택한다. �
 
 명시적인 경로·endpoint나 저장된 설정이 없으면 `QDRIVER_CHROME`, PATH, OS별 기본 설치 경로 순으로 Chrome/Chromium 실행 파일을 찾는다. 찾은 경로도 세션 설정으로 저장한다. 사용자가 선택한 잘못된 경로를 다른 브라우저로 조용히 대체하지 않으며, 브라우저가 없으면 실행 전 `browser_not_found`로 필요한 경로·endpoint를 안내한다. status·stop·session info/list는 자동 탐색·실행을 하지 않는다.
 
+자동화 신호 최소화는 0이 아닌 loopback 디버깅 포트와 초기화 후 Runtime 이벤트 구독 해제를 사용한다. 포트를 선택한 뒤 잠깐 발생하는 bind 경합에 대비해 직접 실행한 Chrome의 새 로그가 알린 browser WebSocket을 검증한 후 연결한다. DOM helper는 명시적인 isolated world를 사용하므로 Runtime 이벤트 스트림 없이 동작한다. 기존 활성 탭·OOPIF의 최초 attach에서는 chromedp 초기화 중 Runtime 구독이 잠깐 노출될 수 있다. 이는 은닉 보장이 아니며, 지문·headless·입력 행동별 실제 측정과 한계는 [자동화 신호 조사](research/automation-signals.md)에 기록한다.
+
 OS 앱 데이터 경로는 Windows LOCALAPPDATA, macOS Library/Application Support, Linux XDG_DATA_HOME 또는 ~/.local/share 아래의 cdp-q-driver다. `sessions/<ID>/session.json`에는 설정과 마지막 관측 Task·탭 그룹 및 cleanup 보고서를 atomic replace로 기록한다. `runtime.json`에는 loopback 주소·프로세스/세대 ID·무작위 token을 두고 종료 시 제거한다. 세션 ID는 경로 탈출과 OS 예약 이름을 거절한다. `--data-dir`은 앱 데이터 루트를 변경하고 기존 `--state` 수동 모드는 별도로 유지한다.
 
 Task·ref·구독의 권위는 실행 중 프로세스 메모리에 둔다. 저장한 탭 목록은 관측 기록이며 브라우저 상태나 crash recovery의 소유권 근거로 사용하지 않는다. 같은 세션 ID로 재시작해도 ref·이벤트 큐·이전 탭은 자동 복원하지 않고 새로운 세대를 발급한다. 같은 브라우저에 연결한 세션 사이의 쿠키·저장소는 공유된다. loopback의 ephemeral TCP listener와 runtime 파일의 token으로 인증한다. 페이지 내용·ref는 metadata에 저장하지 않으며 startup log는 기동·종료 오류의 진단용이다.
@@ -188,6 +190,8 @@ ref의 출력 표기 `@12`는 해당 Page에만 유효한 표시다. 공개 ref 
 ```
 
 클릭은 렌더링 상태, enabled 상태, 실제 hit target을 확인한다. iframe에서는 frame-local 좌표와 상위 viewport 좌표를 구분한다. `Fill`은 편집 가능성과 컨트롤 타입을 확인하고 입력 효과를 검증한다. 애플리케이션이 입력 문자열을 포맷할 수 있으므로 업무별 최종 값 확인은 호출자의 명시적인 읽기·대기로 수행한다.
+
+입력 pacing은 renderer 세션별 마지막 전송 위치에서 목표까지 eased 직선 보간을 수행하고 press 직전 동일성·가림을 다시 검사한다. 기본 12지점·180ms 이동, 40ms 버튼 hold, 35ms key hold와 65ms 문자 간격에 ±15ms 지터를 적용한다. Fill은 기존 선택 내용을 Backspace로 지운 뒤 문자별 키·modifier down/up을 보내며, US 키로 표현할 수 없는 Unicode와 literal 개행·탭은 Unidentified 키 이벤트 사이에서 문자 단위 InsertText를 사용한다. 각 문자 전에 문서·포커스·편집 가능성을 검증하며 취소 시 keyup만 정리하고 press를 재전송하지 않는다. SDK의 InputTiming과 CLI의 저장되는 input-mode(paced/fast)로 설정하며 엔진 수정 없이 동작한다. 실제 행동 검사 통과는 별도 측정 대상이다.
 
 입력 전 대상 탐색은 deadline 안에서 다시 시도할 수 있다. 입력이 일부라도 전송됐거나 전송 여부가 불명확해진 후에는 액션 전체를 자동 재시도하지 않는다. 여러 단계의 입력은 어느 단계까지 전송됐는지 결과에 남긴다.
 
@@ -309,3 +313,5 @@ M4의 실제 Chrome 검증은 독립 구독·소비하지 않은 기대 popup �
 named session 확장의 검증은 OS별 앱 데이터 경로, ID 검증, 최초 자동 생성과 동시 생성 합류, 별도 세션의 같은 페이지 이름과 ref 거절, 한 세션 정리 시 다른 세션 보존, 설정·마지막 그룹 목록 저장, 중지 후 저장 endpoint 재사용과 새 ref 세대를 포함한다. 이 metadata 저장은 실행 중 핸들의 영속 복원이나 협력적 handoff 구현을 뜻하지 않는다.
 
 전체 회귀 검증 중 프레임 발견과 AX/DOM 조회 사이의 일시적인 frameId 소멸이 selector 대기 밖으로 전파되는 경로를 보완했다. selector 기반 관찰만 다시 시도하며 ref의 정확한 대상·stale 실패와 입력 비재전송 계약을 유지한다. 실제 OOPIF를 반복 교체한 뒤 안정된 요소를 기다리는 fixture로 확인한다.
+
+입력 pacing 확장은 기본 마우스 경로에 eased cubic Bezier와 거리·가시 대상 크기 기반 시간을 적용한다. 종점은 검증한 hit point이며 임의 착지·overshoot는 추가하지 않는다. 타이핑은 QWERTY의 키 거리·행·손·손가락·반복·Shift 전환 비용과 제한적인 양손 key rollover를 사용한다. 동시에 유지하는 문자 키는 최대 두 개이며 취소 시 문자 키와 Shift를 release-only로 정리한다. 이는 실측 인체 모델이 아닌 휴리스틱이다. Unicode fallback은 유지하며 실제 두벌식 IME 조합은 후속 범위다. 실제 Chrome의 겹친 키 이벤트·Unicode 경계·취소 정리 및 전체 회귀 테스트를 통과했다. 공개 행동 탐지 페이지의 유효 제출 1회에서는 여전히 suspiciousClientSideBehavior 판정을 받았으며 탐지 통과를 보장하지 않는다.

@@ -104,6 +104,12 @@ func TestCLIChromeHeadedLaunchAndProfileIsolation(t *testing.T) {
 	a, b := namedCLI(t, base.binary, root, "visible"), namedCLI(t, base.binary, root, "headless")
 	a.ok(t, "--chrome", executable, "page", "new", "--name", "main", "data:text/html,<title>Visible Chrome</title>")
 	b.ok(t, "--chrome", executable, "--headless", "page", "new", "--name", "main")
+	if got := string(a.ok(t, "page", "eval", "main", "navigator.webdriver")); got != "false" {
+		t.Fatalf("visible Chrome advertises webdriver automation: %s", got)
+	}
+	if got := string(b.ok(t, "page", "eval", "main", "!Object.hasOwn(navigator,'webdriver') && Function.prototype.toString.call(Object.getOwnPropertyDescriptor(Navigator.prototype,'webdriver').get).includes('[native code]')")); got != "true" {
+		t.Fatalf("webdriver should retain the native getter: %s", got)
+	}
 	var infoA, infoB struct {
 		Browser struct {
 			Profile  string
@@ -140,6 +146,34 @@ func assertBrowserEndpointClosed(t *testing.T, endpoint string) {
 		_ = response.Body.Close()
 		t.Fatal("stop left its owned browser endpoint running")
 	}
+}
+
+func TestCLIInputModePersistenceAndConflict(t *testing.T) {
+	chrome := startChrome(t)
+	base := buildCLI(t)
+	f := namedCLI(t, base.binary, t.TempDir(), "input-mode")
+	f.failed(t, "invalid_argument", "--input-mode", "unknown", "page", "list")
+	f.ok(t, "--endpoint", chrome.endpoint, "start", "--input-mode", "fast")
+	if got := jsonField(t, f.ok(t, "status"), "inputMode"); got != "fast" {
+		t.Fatalf("fast mode was not selected: %s", got)
+	}
+	f.failed(t, "session_conflict", "--input-mode", "paced", "page", "list")
+	f.ok(t, "stop")
+	f.ok(t, "session", "ensure")
+	if got := jsonField(t, f.ok(t, "status"), "inputMode"); got != "fast" {
+		t.Fatalf("restart lost saved input mode: %s", got)
+	}
+	f.ok(t, "page", "new", "--name", "main", `data:text/html,<input id="text"><script>window.keys=0;document.addEventListener('keydown',()=>keys++)</script>`)
+	f.ok(t, "page", "fill", "--css", "#text", "main", "abc")
+	if got := string(f.ok(t, "page", "eval", "main", "keys")); got != "3" {
+		t.Fatalf("fast mode skipped physical key events: %s", got)
+	}
+	f.ok(t, "stop")
+	f.ok(t, "--input-mode", "paced", "session", "ensure")
+	if got := jsonField(t, f.ok(t, "session", "info"), "inputMode"); got != "paced" {
+		t.Fatalf("explicit pacing change was not persisted: %s", got)
+	}
+	f.ok(t, "stop")
 }
 
 func TestCLIChromeConcurrentLaunchAndFailureCleanup(t *testing.T) {

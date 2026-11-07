@@ -119,6 +119,7 @@ type discovery struct {
 	EndpointHash   string        `json:"endpointHash,omitempty"`
 	Chrome         string        `json:"chrome,omitempty"`
 	Headless       bool          `json:"headless,omitempty"`
+	InputMode      string        `json:"inputMode,omitempty"`
 	CommandTimeout time.Duration `json:"commandTimeout,omitempty"`
 	CleanupTimeout time.Duration `json:"cleanupTimeout,omitempty"`
 }

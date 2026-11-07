@@ -3,7 +3,6 @@ package qdriver
 import (
 	"context"
 	_ "embed"
-	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -30,6 +29,7 @@ type ActionReceipt struct {
 type elementState struct {
 	Connected, Supported, Visible, Enabled, Editable, Focused, Hit bool
 	X, Y                                                           float64
+	Width, Height                                                  float64
 	Value                                                          string
 }
 
@@ -45,11 +45,12 @@ func (p *Page) inspectElement(ctx context.Context, _ *chromedp.Target, node reso
 		return state, ErrUnsupported
 	}
 	if state.Visible {
-		x, y, visible, hit, err := p.inputPoint(ctx, node.frame, state.X, state.Y)
+		point, err := p.inputPoint(ctx, node.frame, state.X, state.Y)
 		if err != nil {
 			return state, err
 		}
-		state.X, state.Y, state.Visible, state.Hit = x, y, state.Visible && visible, state.Hit && hit
+		state.X, state.Y, state.Visible, state.Hit = point.X, point.Y, state.Visible && point.Visible, state.Hit && point.Hit
+		state.Width, state.Height = state.Width*point.ScaleX, state.Height*point.ScaleY
 	}
 	return state, nil
 }
@@ -83,9 +84,12 @@ func (p *Page) Click(ctx context.Context, locator Locator) (ActionReceipt, error
 }
 
 // Fill replaces a text input, textarea, or plain contenteditable host's contents
-// using native text input. It requires the requested text to remain afterwards;
+// using paced native character key events. It requires the text to remain afterwards;
 // application formatting can produce ErrFillRejected after an actual edit.
 func (p *Page) Fill(ctx context.Context, locator Locator, text string) (ActionReceipt, error) {
+	if !utf8.ValidString(text) {
+		return ActionReceipt{}, fmt.Errorf("%w: fill text must be valid UTF-8", ErrUnsupported)
+	}
 	return p.inputAction(ctx, "fill", locator, text, keyStroke{})
 }
 
@@ -167,10 +171,11 @@ func (p *Page) inputAction(caller context.Context, kind string, locator Locator,
 		if !state.Focused {
 			return receipt, ErrNotActionable
 		}
-		receipt.InputStarted = true
 		if kind == "fill" {
-			_, err = cdp.Call(ctx, node.session, input.InsertText, input.InsertTextParams{Text: text})
+			receipt.InputStarted = state.Value != "" || text != ""
+			err = p.typeReplacement(ctx, t, node, state.Value, text)
 		} else {
+			receipt.InputStarted = true
 			err = p.dispatchKey(ctx, node.session, key)
 		}
 		if err != nil {
@@ -192,7 +197,7 @@ func (p *Page) inputAction(caller context.Context, kind string, locator Locator,
 
 func (p *Page) clickElement(ctx context.Context, t *chromedp.Target, node resolvedElement, state elementState, receipt ActionReceipt) (ActionReceipt, error) {
 	receipt.InputStarted = true
-	_, err := cdp.Call(ctx, node.session, input.DispatchMouseEvent, input.DispatchMouseEventParams{Type: input.DispatchMouseEventTypeMouseMoved, X: state.X, Y: state.Y})
+	err := p.movePointer(ctx, node, state)
 	if err != nil {
 		return receipt, err
 	}
@@ -212,7 +217,7 @@ func (p *Page) clickElement(ctx context.Context, t *chromedp.Target, node resolv
 		// Entering a same-process iframe can make Chromium adjust an outer
 		// scroll position. Reposition before the first press, without replaying
 		// a click or accepting a different node.
-		if _, err := cdp.Call(ctx, node.session, input.DispatchMouseEvent, input.DispatchMouseEventParams{Type: input.DispatchMouseEventTypeMouseMoved, X: after.X, Y: after.Y}); err != nil {
+		if err := p.movePointer(ctx, node, after); err != nil {
 			return receipt, err
 		}
 	}
@@ -236,7 +241,8 @@ func (p *Page) clickElement(ctx context.Context, t *chromedp.Target, node resolv
 		return receipt, err
 	}
 	press.Type, press.Buttons = input.DispatchMouseEventTypeMouseReleased, 0
-	if err := ctx.Err(); err != nil {
+	timing := p.timing()
+	if err := waitInput(ctx, jitterDelay(timing.ButtonHold, timing.Jitter)); err != nil {
 		p.releaseMouse(ctx, node.session, press)
 		return receipt, err
 	}
@@ -310,22 +316,75 @@ func parseKey(chord string) (keyStroke, error) {
 	return key, nil
 }
 
-func (p *Page) dispatchKey(ctx context.Context, t cdp.Session, key keyStroke) error {
-	params := input.DispatchKeyEventParams{Type: input.DispatchKeyEventTypeKeyDown, Key: key.key, Code: key.code, Text: key.text, Modifiers: key.modifiers, WindowsVirtualKeyCode: key.virtual}
-	_, err := cdp.Call(ctx, t, input.DispatchKeyEvent, params)
-	params.Type, params.Text = input.DispatchKeyEventTypeKeyUp, ""
-	if err != nil || ctx.Err() != nil {
-		if p.deferForDialog(func(cleanup context.Context) { _, _ = cdp.Call(cleanup, t, input.DispatchKeyEvent, params) }) {
-			return errors.Join(err, ctx.Err())
+func (p *Page) dispatchKey(ctx context.Context, t cdp.Session, key keyStroke) (resultErr error) {
+	var releases []input.DispatchKeyEventParams
+	defer func() {
+		if resultErr != nil {
+			ordered := make([]input.DispatchKeyEventParams, 0, len(releases))
+			for i := len(releases) - 1; i >= 0; i-- {
+				ordered = append(ordered, releases[i])
+			}
+			p.releaseKeys(ctx, t, ordered)
 		}
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.task.browser.options.CleanupTimeout)
-		defer cancel()
-		_, _ = cdp.Call(cleanup, t, input.DispatchKeyEvent, params)
-		if err != nil {
+	}()
+	active := int64(0)
+	for _, modifier := range []struct {
+		bit, virtual int64
+		key, code    string
+	}{
+		{1, 18, "Alt", "AltLeft"}, {2, 17, "Control", "ControlLeft"}, {4, 91, "Meta", "MetaLeft"}, {8, 16, "Shift", "ShiftLeft"},
+	} {
+		if key.modifiers&modifier.bit == 0 {
+			continue
+		}
+		up := input.DispatchKeyEventParams{Type: input.DispatchKeyEventTypeKeyUp, Key: modifier.key, Code: modifier.code, WindowsVirtualKeyCode: modifier.virtual, Modifiers: active}
+		releases = append(releases, up)
+		active |= modifier.bit
+		down := up
+		down.Type, down.Modifiers = input.DispatchKeyEventTypeRawKeyDown, active
+		if _, err := cdp.Call(ctx, t, input.DispatchKeyEvent, down); err != nil {
 			return err
 		}
-		return ctx.Err()
 	}
-	_, err = cdp.Call(ctx, t, input.DispatchKeyEvent, params)
-	return err
+	params := input.DispatchKeyEventParams{Type: input.DispatchKeyEventTypeKeyDown, Key: key.key, Code: key.code, Text: key.text, UnmodifiedText: key.text, Modifiers: key.modifiers, WindowsVirtualKeyCode: key.virtual}
+	if key.text == "" {
+		params.Type = input.DispatchKeyEventTypeRawKeyDown
+	}
+	up := params
+	up.Type, up.Text, up.UnmodifiedText = input.DispatchKeyEventTypeKeyUp, "", ""
+	releases = append(releases, up) // Even a failed dispatch may have reached Chrome.
+	if _, err := cdp.Call(ctx, t, input.DispatchKeyEvent, params); err != nil {
+		return err
+	}
+	timing := p.timing()
+	if err := waitInput(ctx, jitterDelay(timing.KeyHold, timing.Jitter)); err != nil {
+		return err
+	}
+	for len(releases) > 0 {
+		last := len(releases) - 1
+		if _, err := cdp.Call(ctx, t, input.DispatchKeyEvent, releases[last]); err != nil {
+			return err
+		}
+		releases = releases[:last]
+	}
+	return nil
+}
+
+func (p *Page) releaseKey(ctx context.Context, t cdp.Session, params input.DispatchKeyEventParams) {
+	p.releaseKeys(ctx, t, []input.DispatchKeyEventParams{params})
+}
+
+func (p *Page) releaseKeys(ctx context.Context, t cdp.Session, keys []input.DispatchKeyEventParams) {
+	release := func(cleanup context.Context) {
+		for _, params := range keys {
+			params.Type, params.Text, params.UnmodifiedText = input.DispatchKeyEventTypeKeyUp, "", ""
+			_, _ = cdp.Call(cleanup, t, input.DispatchKeyEvent, params)
+		}
+	}
+	if p.deferForDialog(release) {
+		return
+	}
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.task.browser.options.CleanupTimeout)
+	defer cancel()
+	release(cleanup)
 }

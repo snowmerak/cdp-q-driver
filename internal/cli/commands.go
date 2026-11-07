@@ -11,16 +11,16 @@ import (
 const help = `cdp-q-driver — stateful Chromium control with managed launch or CDP attachment
 
 Usage: cdp-q-driver [--session ID] [--chrome PATH | --endpoint URL] [--headless]
-                    [--data-dir DIR]
+                    [--data-dir DIR] [--input-mode paced|fast]
                     [--timeout 30s] COMMAND ...
 
 Session:
   session ensure             Get or create the selected named session
   session list               List sessions saved in OS application data
   session info               Inspect selected session's saved metadata
-  start [--chrome PATH | --endpoint URL] [--headless]
+  start [--chrome PATH | --endpoint URL] [--headless] [--input-mode paced|fast]
                              Get or create a background named session
-  serve [--chrome PATH | --endpoint URL] [--headless]
+  serve [--chrome PATH | --endpoint URL] [--headless] [--input-mode paced|fast]
                              Run that process in the foreground
   status                     Inspect the running session
   stop                       Clean up tasks and stop the control process
@@ -76,6 +76,9 @@ an installed Chrome/Chromium, --chrome PATH, or --endpoint URL.
 Explicit flags and saved settings take precedence; otherwise QDRIVER_CHROME,
 PATH, and standard OS installation locations select Chrome automatically.
 Later starts reuse saved configuration.
+Input defaults to paced: interpolated pointer movement and character keydown/up
+with bounded timing jitter. --input-mode fast removes delays/interpolation;
+it still sends character key events. Changing mode requires stopping the session.
 --chrome launches a visible browser with a dedicated persistent session profile
 and an automatic loopback CDP port; --headless opts out of the visible window.
 stop also closes a Chrome instance launched by this session; external endpoint

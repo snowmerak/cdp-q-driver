@@ -172,6 +172,14 @@ behind. Confirm the recorded control/browser processes have exited before
 removing the exact stale runtime/lock files; the CLI will not guess or kill a
 process from cached metadata. The persistent profile is never deleted by stop.
 
+Managed launch uses a nonzero debugging port, and page/frame sessions disable
+Runtime event streaming after initialization to reduce unnecessary automation
+signals. The default visible browser retains its native browser properties and
+User-Agent. This is not an undetectable browser: headless and input-behavior
+checks can still flag it. One Google search loaded results without a challenge;
+this does not guarantee future CAPTCHA behavior.
+See the [measured results and limits](docs/research/automation-signals.md).
+
 ## Try it
 
 Start a dedicated test browser. For example, in PowerShell:
@@ -277,9 +285,43 @@ Refs are tied to the exact page, frame, renderer session, document, and backend 
 
 Snapshot viewport filtering intersects each frame's viewport through its ancestors; it is not a complete CSS clipping/hit-test guarantee or an atomic snapshot of all same-document mutations. Actions independently recheck visibility, enabled state, document identity, deep shadow focus, and pointer interception, including ancestor iframe overlays. Coordinates include frame borders and positive axis-aligned scaling. A same-process iframe's hover-induced scroll correction may reposition the pointer once before the first press; a click itself is never replayed. Rotation, skew, perspective, and mirrored frame transforms return `ErrUnsupported`. Native input activates the managed tab, so it can change which tab is visible.
 
-`Fill` supports text/search/email/tel/url/password inputs, textareas, and plain contenteditable hosts, including controls in supported frames/open shadow roots. It uses native text insertion, including Unicode and empty replacement, then requires the exact requested text to remain. Application formatting can cause `ErrFillRejected` after a successful edit; that edit is not retried. Number/date inputs, rich editors, closed shadow roots, and other widgets remain outside the supported input set.
+`Fill` supports text/search/email/tel/url/password inputs, textareas, and plain contenteditable hosts, including controls in supported frames/open shadow roots. It selects existing contents, clears them with Backspace, and types characters using native keydown/keyup sequences with bounded timing jitter. Printable US-layout characters include physical key codes and modifier transitions. Unicode and literal newline/tab characters use individual native text insertions between `Unidentified` key events; this does not emulate IME composition. An empty replacement clears the control. Each character rechecks document identity, focus, editability, and interception. Application formatting can cause `ErrFillRejected` after the complete edit; interrupted typing can leave partial text. Input handlers now observe per-character events. Number/date inputs, rich editors, closed shadow roots, and other widgets remain outside the supported input set.
 
-`Press` supports Enter, Tab, Escape, Backspace, Delete, arrows, Home/End, PageUp/PageDown, printable characters, and Alt/Control/Meta/Shift event modifiers. It does not emulate a physical modifier-key sequence or provide IME composition.
+`Press` supports Enter, Tab, Escape, Backspace, Delete, arrows, Home/End, PageUp/PageDown, printable characters, and physical Alt/Control/Meta/Shift down/up sequences. Cancellation releases attempted keys without replaying their presses. It does not provide IME composition.
+
+Pointer movement uses an eased cubic Bezier curve before the existing
+post-hover/hit-target checks. Distance and visible target size adjust duration
+and point count; the endpoint remains the exact inspected hit point, without
+overshoot or randomized landing. It starts from the driver's last acknowledged
+position in the same renderer session, or that renderer's viewport origin when
+unknown. It does not read the OS pointer or track another client's movement.
+Defaults use at least 12 points (up to 120), a 180 ms base movement duration
+scaled by 0.6..3.5, a 40 ms mouse-button hold, a 35 ms key hold, and a 65 ms
+base key-onset interval, with up to ±15 ms duration jitter. QWERTY key distance,
+row, hand, finger, repetition, and entering Shift adjust onset intervals.
+Eligible opposite-hand transitions with matching modifiers have a 15% chance
+of overlapping; at most two character keys are held. Repeated keys, modifier
+changes, and Unicode fallback flush held keys first. Cancellation attempts to
+release held character keys and Shift without replaying input. CDP work and
+target checks add time and can prevent a planned overlap. These are geometric
+and timing heuristics, not a model fitted to recorded human behavior, and do
+not guarantee a human verdict. Korean text still uses the Unicode fallback;
+physical dubeolsik composition is not implemented.
+
+`Options.InputTiming` customizes these values. Nil uses the defaults;
+`&qdriver.InputTiming{}` disables interpolation/delays while retaining character
+key events. Explicit structs use their supplied values, including zero; each
+base duration must be 0..2 seconds, and `MouseSteps` 0..120 (0 means one point
+when curves are disabled). `MouseCurve` enables adaptive curves;
+`KeyTransitions` enables QWERTY transition costs, and `KeyOverlap` is a 0..1
+probability. With transitions or overlap enabled, `KeyInterval` is an onset
+interval; otherwise it is a gap after key release. Explicit structs leave
+these features disabled unless requested.
+The CLI defaults to `--input-mode paced`; `--input-mode fast` selects the zero
+timing settings. The mode is saved per session and requires stopping/restarting
+to change. Increase both the CLI `--timeout` and SDK `--command-timeout` for long
+text, or choose fast mode. Inspect partial state after a timeout before any
+follow-up edit.
 
 Input returns an `ActionReceipt`: `InputStarted` means a CDP input command may have been sent, including a pointer move; `InputCompleted` means the entire sequence was acknowledged. Neither means the application completed its work. Tab activation, scrolling, and focus can have effects even before input starts. On cancellation during a pressed gesture, one cleanup release may still complete that gesture under the cleanup budget; the press itself is never replayed. Use explicit page assertions/waits to verify the business result.
 
@@ -349,7 +391,7 @@ It verifies an owned popup, prompt handling, a hidden file input, a completed do
 go mod verify
 go build ./...
 go vet ./...
-go test -v -count=1 -timeout=90s ./...
+go test -v -count=1 -timeout=180s ./...
 ```
 
 Integration tests start their own headless Chrome/Chromium/Edge process, temporary profile, and ephemeral CDP port. They use local HTTP fixtures and clean up only those resources. They never connect to a user's running browser.
@@ -359,7 +401,7 @@ Set `QDRIVER_CHROME` to select a browser executable. Without an installed browse
 ```powershell
 $env:QDRIVER_INTEGRATION = '1'
 $env:QDRIVER_CHROME = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
-go test -v -count=1 -timeout=90s ./...
+go test -v -count=1 -timeout=180s ./...
 ```
 
 Coverage includes tab lifecycle and preservation, cancellation and connection loss, all four built examples, Unicode/empty text editing, ref identity and stale/wrong-page rejection, ambiguous/hidden/disabled/covered targets, hover overlays, formatting rejection, viewport/full-page budgets, retained-ref capacity, asynchronous waits, and cancellation after a mouse press without replay.
@@ -393,6 +435,11 @@ storage, mode conflicts, failed-start cleanup, and owned-browser shutdown.
 Discovery tests cover ordered PATH/OS candidates, environment overrides,
 missing-browser errors, saved-settings precedence, and actual CLI startup
 without a Chrome path or CDP endpoint.
+Pacing tests inspect trusted mouse/key events, interpolation timing, curve
+bounds and target-dependent duration, QWERTY transitions, native key rollover,
+shifted punctuation, Unicode/newline/tab preservation, focus changes,
+cancellation releasing overlapping keys/Shift without replay, and persisted
+CLI input modes.
 
 ## Design
 

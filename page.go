@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -14,25 +15,27 @@ import (
 // Page is a task-scoped handle to one browser tab. Operations are serialized
 // with lifecycle changes. Use ID to correlate it with Browser.Pages.
 type Page struct {
-	task            *Task
-	id              string
-	owned           bool
-	managed         bool
-	ctx             context.Context
-	cancel          context.CancelFunc
-	waitCancel      context.CancelFunc
-	stopOnce        sync.Once
-	stopped         chan struct{}
-	refs            map[uint64]refEntry
-	nextRef         uint64
-	document        string
-	frames          map[cdp.FrameID]*frameState
-	frameSessions   map[cdp.FrameID]*frameConnection
-	events          *eventHub
-	initialized     bool
-	targetClosed    bool
-	interceptFiles  bool // Protected by the operation gate.
-	deferredCleanup []func(context.Context)
+	task               *Task
+	id                 string
+	owned              bool
+	managed            bool
+	ctx                context.Context
+	cancel             context.CancelFunc
+	waitCancel         context.CancelFunc
+	stopOnce           sync.Once
+	stopped            chan struct{}
+	refs               map[uint64]refEntry
+	nextRef            uint64
+	document           string
+	frames             map[cdp.FrameID]*frameState
+	frameSessions      map[cdp.FrameID]*frameConnection
+	events             *eventHub
+	initialized        bool
+	targetClosed       bool
+	interceptFiles     bool // Protected by the operation gate.
+	deferredCleanup    []func(context.Context)
+	pointerSession     string
+	pointerX, pointerY float64
 }
 
 // ID returns this tab's browser target ID, which is not durable across restarts.
@@ -63,6 +66,12 @@ func (p *Page) initialize(ctx context.Context) error {
 	// A failed setup cancels only this session and keeps the tab for cleanup.
 	stop := context.AfterFunc(ctx, p.cancel)
 	err := chromedp.Do(p.ctx)
+	if err == nil {
+		// The driver resolves isolated execution contexts explicitly. Runtime
+		// event streaming is unnecessary after chromedp's bootstrap and can
+		// cause observable console-object serialization in the document.
+		_, err = cdp.Call(ctx, chromedp.FromContext(p.ctx).Target, runtime.Disable, cdp.Empty{})
+	}
 	stop()
 	err = errors.Join(err, ctx.Err())
 	if err != nil {
@@ -122,6 +131,7 @@ func runPageOperation[T any](caller context.Context, p *Page, name string, actio
 func (p *Page) Goto(ctx context.Context, url string) error {
 	_, err := runPage(ctx, p, "navigate", true, chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
 		p.invalidateRefs()
+		p.pointerSession = ""
 		_, err := chromedp.Navigate(url)(ctx, t)
 		return err
 	}))

@@ -63,6 +63,27 @@ actually calls for borrowing. Adoption does not make that tab task-owned.
 Use `task new NAME` and `page new --task NAME --name PAGE URL` when this work
 needs its own cleanup group inside a reused session.
 
+For sites sensitive to automation, retain the default visible browser and reuse
+the chosen session's persistent profile. Headless can still be detected. The
+launcher reduces port/Runtime-event signals; it does not guarantee acceptance
+by a site. Distinguish page access from a CAPTCHA or bot verdict, and report the
+actual result. A false `navigator.webdriver` value alone is not a passed test.
+The default `--input-mode paced` uses eased Bezier pointer movement with
+distance/target-size timing. `fill` emits physical character keydown/up with
+QWERTY hand/finger/distance timing, bounded jitter, and occasional compatible
+opposite-hand overlap (at most two character keys). The pointer ends at the
+inspected hit point, without overshoot or random landing. These are heuristics,
+not recorded human traces or a detector-acceptance guarantee. It still replaces
+the field's contents and checks the retained value; applications see more input
+events than a bulk edit. Unicode/newline/tab text uses individual native text
+insertion between `Unidentified` keys, without IME composition or physical
+dubeolsik typing. Cancellation attempts release-only cleanup of held keys.
+`--input-mode fast` disables delays/interpolation, retaining key events. Modes persist and
+require stopping the session to change. Increase command/SDK timeouts for long
+text. An interrupted fill can leave partial text: inspect before editing again.
+Neither mode promises human behavior. Preserve the current session for any
+requested user handoff.
+
 ## Observe, act, verify
 
 - Parse successful JSON from stdout as `{ "ok": true, "result": ... }`.

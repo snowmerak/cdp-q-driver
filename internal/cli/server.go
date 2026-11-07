@@ -46,7 +46,7 @@ func runServer(ctx context.Context, options appOptions, serve serveOptions) (res
 	defer func() {
 		resultErr = errors.Join(resultErr, file.Close(), removeOwnedState(options.State, os.Getpid(), instance))
 	}()
-	d := discovery{Version: protocolVersion, Token: token, Instance: instance, PID: os.Getpid(), EndpointHash: endpointHash(serve.Endpoint), Chrome: serve.Chrome, Headless: serve.Headless, CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout}
+	d := discovery{Version: protocolVersion, Token: token, Instance: instance, PID: os.Getpid(), EndpointHash: endpointHash(serve.Endpoint), Chrome: serve.Chrome, Headless: serve.Headless, InputMode: serve.InputMode, CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout}
 	if options.Named {
 		d.Session = options.Session
 	}
@@ -72,7 +72,11 @@ func runServer(ctx context.Context, options appOptions, serve serveOptions) (res
 		d.EndpointHash = endpointHash(serve.Endpoint)
 		browserExited = owned.done
 	}
-	b, err := qdriver.Attach(startup, serve.Endpoint, qdriver.Options{CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout})
+	sdkOptions := qdriver.Options{CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout}
+	if serve.InputMode == "fast" {
+		sdkOptions.InputTiming = &qdriver.InputTiming{}
+	}
+	b, err := qdriver.Attach(startup, serve.Endpoint, sdkOptions)
 	if err != nil {
 		cancel()
 		return errors.New(strings.ReplaceAll(err.Error(), serve.Endpoint, "[browser endpoint]"))
@@ -88,6 +92,7 @@ func runServer(ctx context.Context, options appOptions, serve serveOptions) (res
 	}
 	defer func() { _, err := s.close(); resultErr = errors.Join(resultErr, err) }()
 	s.ownedBrowser = owned
+	s.inputMode = serve.InputMode
 	if options.Named {
 		s.sessionID = options.Session
 		store, err := newSessionStore(options, serve, instance)

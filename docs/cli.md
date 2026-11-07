@@ -44,8 +44,44 @@ launch has a visible window. Add `--headless` for an unattended browser, or use
 inside the `.app` bundle; on Linux use the installed Chromium executable. The
 path and launch mode are saved, so later commands need only the session ID.
 The profile is separate from personal browser data; log in there when needed.
-The launcher uses `--remote-debugging-port=0`; this and headless mode can affect
-automation detection. Managed launch provides no bot-detection avoidance.
+
+Input defaults to `--input-mode paced`: eased Bezier pointer movement with
+distance/target-size timing, physical character/modifier key sequences,
+QWERTY hand/finger/distance transition costs, and bounded timing jitter.
+Compatible opposite-hand transitions can overlap (15% eligibility probability,
+at most two character keys). The pointer ends at the inspected hit point;
+there is no overshoot or random landing. These are heuristics rather than
+recorded human traces. `page fill`
+keeps replacement semantics but now emits per-character keyboard/input events.
+Unicode, newlines, and tabs use single-character text insertion between
+`Unidentified` key events rather than an IME or bulk text edit. Physical Korean
+dubeolsik composition is not implemented. Application
+handlers can transform text, navigate, or move focus; the next character is
+revalidated and the final retained value is checked. A canceled fill may be
+partial and is never replayed automatically.
+
+Use `--input-mode fast` globally or on `start`/`serve` to remove interpolation
+and delays while retaining character key events. This setting is saved, reused,
+and fixed until the selected session stops. `status` and `session info` report
+`inputMode`. Long fills may need larger `--timeout` and `--command-timeout`
+budgets. SDK callers can configure the individual `Options.InputTiming` fields;
+the README describes the defaults and ranges. Pacing is not a bot-verdict
+guarantee.
+The launcher selects a nonzero loopback debugging port and verifies the browser
+WebSocket URL from that child's fresh startup log before connecting. There is
+a short bind race after selecting the port; a failed launch reports its log
+rather than attaching to an unrelated endpoint. It does not use port `0` or
+`--enable-automation`. SDK page/OOPIF sessions disable Runtime event streaming
+after chromedp initialization; explicit evaluation and isolated-world helpers
+continue to work. Initialization still briefly enables Runtime, which may be
+observable when adopting an already active page/frame.
+
+Keep the default visible browser when site compatibility matters. Headless
+mode can still expose a headless User-Agent and other differences. A false
+`navigator.webdriver` value does not establish that a site accepts automation.
+The driver does not alter JavaScript browser-property getters, User-Agent,
+WebGL, or device fingerprints. Behavioral checks can still identify native CDP
+input. See the measured [automation signal investigation](research/automation-signals.md).
 
 To attach to an external browser instead, use `--endpoint URL` and prepare the
 browser as shown in the README's manual-launch example. Never combine `--chrome`

@@ -84,6 +84,9 @@ func (p *Page) iframeSession(ctx context.Context, id cdp.FrameID) (*chromedp.Tar
 	p.frameSessions[id] = c // Retain even a failed attachment for bounded cleanup.
 	stop := context.AfterFunc(ctx, cancel)
 	err := chromedp.Do(child) // The reader must live as long as the frame session.
+	if err == nil {
+		_, err = cdp.Call(ctx, chromedp.FromContext(child).Target, runtime.Disable, cdp.Empty{})
+	}
 	stop()
 	if err = errors.Join(err, ctx.Err()); err != nil {
 		cancel()

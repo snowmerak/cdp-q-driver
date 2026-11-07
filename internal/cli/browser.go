@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,17 +55,22 @@ func launchBrowser(ctx context.Context, o appOptions, serve serveOptions) (_ *la
 			resultErr = errors.Join(resultErr, owned.close())
 		}
 	}()
-	// The driver lock prevents normal concurrent launches and leaves a visible
-	// recovery marker after an abrupt crash. Never reuse stale endpoint data.
-	activePort := filepath.Join(profile, "DevToolsActivePort")
-	if err := os.Remove(activePort); err != nil && !errors.Is(err, os.ErrNotExist) {
+	// Select a nonzero loopback port. Chrome treats port=0 as an automation
+	// signal even in visible mode. Verify the browser's own startup log before
+	// connecting, since another process can take the port after it is released.
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
 		return nil, err
 	}
 	owned.log, err = os.CreateTemp(filepath.Dir(o.State), "chrome-*.log")
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0",
+	args := []string{"--remote-debugging-address=127.0.0.1", "--remote-debugging-port=" + strconv.Itoa(port),
 		"--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check"}
 	if serve.Headless {
 		args = append(args, "--headless=new")
@@ -84,7 +90,7 @@ func launchBrowser(ctx context.Context, o appOptions, serve serveOptions) (_ *la
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if endpoint, websocket, err := readActivePort(activePort); err == nil {
+		if endpoint, websocket, err := readBrowserEndpoint(owned.log.Name(), port); err == nil {
 			owned.endpoint, owned.websocket = endpoint, websocket
 			probe, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 			conn, dialErr := remote.DialContext(probe, websocket)
@@ -109,26 +115,52 @@ func launchBrowser(ctx context.Context, o appOptions, serve serveOptions) (_ *la
 	}
 }
 
-func readActivePort(path string) (endpoint, websocket string, err error) {
+func readBrowserEndpoint(path string, port int) (endpoint, websocket string, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", "", err
 	}
 	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, 4097))
+	// Keep startup polling bounded even if Chrome emits a large diagnostic log.
+	info, err := f.Stat()
 	if err != nil {
 		return "", "", err
 	}
-	lines := strings.Fields(string(data))
-	if len(data) > 4096 || len(lines) != 2 {
-		return "", "", errors.New("invalid DevToolsActivePort file")
+	if info.Size() > 64<<10 {
+		if _, err := f.Seek(info.Size()-(64<<10), io.SeekStart); err != nil {
+			return "", "", err
+		}
 	}
-	port, err := strconv.Atoi(lines[0])
-	if err != nil || port < 1 || port > 65535 || !strings.HasPrefix(lines[1], "/devtools/browser/") || strings.ContainsAny(lines[1], "?#\\") || strings.Contains(lines[1], "..") {
-		return "", "", errors.New("invalid DevToolsActivePort endpoint")
+	data, err := io.ReadAll(io.LimitReader(f, 64<<10))
+	if err != nil {
+		return "", "", err
+	}
+	if port < 1 || port > 65535 {
+		return "", "", errors.New("invalid browser port")
 	}
 	host := "127.0.0.1:" + strconv.Itoa(port)
-	return "http://" + host, "ws://" + host + lines[1], nil
+	prefix := "DevTools listening on ws://" + host + "/devtools/browser/"
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		id := strings.TrimPrefix(line, prefix)
+		if id == "" || len(id) > 128 {
+			continue
+		}
+		valid := true
+		for _, c := range id {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return "http://" + host, strings.TrimPrefix(line, "DevTools listening on "), nil
+		}
+	}
+	return "", "", errors.New("browser has not reported its endpoint on the selected port")
 }
 
 func (b *launchedBrowser) info() map[string]any {

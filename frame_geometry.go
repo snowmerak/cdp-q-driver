@@ -36,38 +36,44 @@ func (p *Page) ownerGeometry(ctx context.Context, child *frameState, action stri
 
 // Input uses the renderer session's root coordinates, but interception checks
 // traverse every ancestor up to the page root using the same geometry reads.
-func (p *Page) inputPoint(ctx context.Context, id cdp.FrameID, x, y float64) (float64, float64, bool, bool, error) {
+type inputGeometry struct {
+	X, Y, ScaleX, ScaleY float64
+	Visible, Hit         bool
+}
+
+func (p *Page) inputPoint(ctx context.Context, id cdp.FrameID, x, y float64) (inputGeometry, error) {
 	initial := p.frames[id]
 	if initial == nil {
-		return 0, 0, false, false, ErrFrameNotFound
+		return inputGeometry{}, ErrFrameNotFound
 	}
-	inputX, inputY := x, y
+	result := inputGeometry{X: x, Y: y, ScaleX: 1, ScaleY: 1, Visible: true, Hit: true}
 	withinSession := true
-	visible, hit := true, true
 	for {
 		frame := p.frames[id]
 		if frame == nil {
-			return 0, 0, false, false, ErrFrameNotFound
+			return inputGeometry{}, ErrFrameNotFound
 		}
 		if frame.info.ParentID == "" {
-			return inputX, inputY, visible, hit, nil
+			return result, nil
 		}
 		geometry, err := p.ownerGeometry(ctx, frame, "inspect", x, y)
 		if err != nil {
-			return 0, 0, false, false, err
+			return inputGeometry{}, err
 		}
 		if !geometry.Supported {
-			return 0, 0, false, false, ErrUnsupported
+			return inputGeometry{}, ErrUnsupported
 		}
-		visible, hit = visible && geometry.Visible, hit && geometry.Hit
+		result.Visible, result.Hit = result.Visible && geometry.Visible, result.Hit && geometry.Hit
 		x, y, id = geometry.X, geometry.Y, cdp.FrameID(frame.info.ParentID)
 		parent := p.frames[id]
 		if parent == nil {
-			return 0, 0, false, false, ErrFrameNotFound
+			return inputGeometry{}, ErrFrameNotFound
 		}
 		withinSession = withinSession && parent.doc.sessionKey == initial.doc.sessionKey
 		if withinSession {
-			inputX, inputY = x, y
+			result.X, result.Y = x, y
+			result.ScaleX *= geometry.ScaleX
+			result.ScaleY *= geometry.ScaleY
 		}
 	}
 }

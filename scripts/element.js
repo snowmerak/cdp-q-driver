@@ -33,6 +33,8 @@ function(action) {
       connected: element.isConnected, Supported: true, visible, enabled,
       editable: (textInput || editingHost) && !element.readOnly,
       focused: active === element, x, y, hit,
+      width: rect ? Math.max(0, Math.min(innerWidth,rect.right)-Math.max(0,rect.left)) : 0,
+      height: rect ? Math.max(0, Math.min(innerHeight,rect.bottom)-Math.max(0,rect.top)) : 0,
       value: textInput ? element.value : element.textContent
     };
   }

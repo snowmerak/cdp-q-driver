@@ -26,6 +26,7 @@ type Options struct {
 	MaxFrames        int           // Default: 128 reachable frames per page.
 	EventBuffer      int           // Default: 64 events per subscription.
 	MaxSubscriptions int           // Default: 128 subscriptions per page.
+	InputTiming      *InputTiming  // Nil uses paced input; &InputTiming{} disables delays.
 }
 
 // Browser is a connection to an external browser. Operations are serialized
@@ -73,6 +74,11 @@ func Attach(ctx context.Context, endpoint string, options Options) (*Browser, er
 	if options.CommandTimeout < 0 || options.CleanupTimeout < 0 || options.MaxRefs < 0 || options.MaxFrames < 0 || options.EventBuffer < 0 || options.MaxSubscriptions < 0 {
 		return nil, errors.New("qdriver attach: timeouts and ref capacity must not be negative")
 	}
+	timing, err := inputTiming(options.InputTiming)
+	if err != nil {
+		return nil, err
+	}
+	options.InputTiming = &timing // Snapshot caller-owned settings for this connection.
 	if options.CommandTimeout == 0 {
 		options.CommandTimeout = 15 * time.Second
 	}

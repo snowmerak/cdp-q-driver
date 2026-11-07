@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,21 +41,35 @@ func TestChromeLaunchConfigurationAndEndpointParsing(t *testing.T) {
 			t.Fatal("conflicting launch configuration accepted")
 		}
 	}
-	path := filepath.Join(t.TempDir(), "DevToolsActivePort")
-	for _, data := range []string{"0\n/devtools/browser/id", "99999\n/devtools/browser/id", "9222\n/devtools/page/id", "9222\n//evil/id", "9222\n/devtools/browser/id?x=1", "9222", "9222\n/devtools/browser/id\nextra"} {
+	path := filepath.Join(t.TempDir(), "chrome.log")
+	for _, data := range []string{
+		"DevTools listening on ws://127.0.0.1:9222/devtools/browser/id\n",
+		"DevTools listening on ws://localhost:45678/devtools/browser/id\n",
+		"DevTools listening on ws://127.0.0.1:45678/devtools/page/id\n",
+		"DevTools listening on ws://127.0.0.1:45678/devtools/browser/id?x=1\n",
+		"DevTools listening on ws://127.0.0.1:45678/devtools/browser/../id\n",
+		"DevTools listening on ws://127.0.0.1:45678/devtools/browser/id extra\n",
+		"DevTools listening on ws://127.0.0.1:45678/devtools/browser/\n",
+	} {
 		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := readActivePort(path); err == nil {
+		if _, _, err := readBrowserEndpoint(path, 45678); err == nil {
 			t.Errorf("invalid endpoint accepted: %q", data)
 		}
 	}
-	if err := os.WriteFile(path, []byte("45678\r\n/devtools/browser/id\r\n"), 0600); err != nil {
+	data := strings.Repeat("log noise\n", 10000) + "\r\nDevTools listening on ws://127.0.0.1:45678/devtools/browser/id\r\n"
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
-	endpoint, websocket, err := readActivePort(path)
+	endpoint, websocket, err := readBrowserEndpoint(path, 45678)
 	if err != nil || endpoint != "http://127.0.0.1:45678" || websocket != "ws://127.0.0.1:45678/devtools/browser/id" {
 		t.Fatalf("invalid parsed endpoint: %s %s %v", endpoint, websocket, err)
+	}
+	for _, port := range []int{0, -1, 65536} {
+		if _, _, err := readBrowserEndpoint(path, port); err == nil {
+			t.Fatalf("invalid port accepted: %d", port)
+		}
 	}
 }
 

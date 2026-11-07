@@ -27,6 +27,7 @@ type appOptions struct {
 	Endpoint    string
 	Chrome      string
 	Headless    bool
+	InputMode   string
 	headlessSet bool
 	Named       bool
 }
@@ -34,6 +35,7 @@ type serveOptions struct {
 	Endpoint                       string
 	Chrome                         string
 	Headless                       bool
+	InputMode                      string
 	headlessSet                    bool
 	CommandTimeout, CleanupTimeout time.Duration
 	commandSet, cleanupSet         bool
@@ -50,6 +52,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	f.StringVar(&options.Endpoint, "endpoint", "", "CDP endpoint for first use of a named session")
 	f.StringVar(&options.Chrome, "chrome", "", "Chrome/Chromium executable to launch with a dedicated session profile")
 	f.BoolVar(&options.Headless, "headless", false, "launch Chrome without a visible window")
+	f.StringVar(&options.InputMode, "input-mode", "", "input pacing: paced (default) or fast; fixed until session restart")
 	f.DurationVar(&options.Timeout, "timeout", 30*time.Second, "whole command timeout")
 	emitError := func(err error, code int) int {
 		_ = json.NewEncoder(stderr).Encode(response{OK: false, Error: failure(err, false)})
@@ -153,7 +156,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	} else {
 		d, err = loadDiscovery(options.State)
 		if err == nil {
-			err = checkSession(options, d, serveOptions{Endpoint: options.Endpoint, Chrome: options.Chrome, Headless: options.Headless, headlessSet: options.headlessSet})
+			err = checkSession(options, d, serveOptions{Endpoint: options.Endpoint, Chrome: options.Chrome, Headless: options.Headless, headlessSet: options.headlessSet, InputMode: options.InputMode})
 		}
 	}
 	if err != nil {
@@ -188,6 +191,7 @@ func parseServe(args []string) (serveOptions, error) {
 	f.StringVar(&o.Endpoint, "endpoint", "", "explicit browser CDP endpoint")
 	f.StringVar(&o.Chrome, "chrome", "", "Chrome/Chromium executable to launch")
 	f.BoolVar(&o.Headless, "headless", false, "launch Chrome without a visible window")
+	f.StringVar(&o.InputMode, "input-mode", "", "input pacing: paced or fast")
 	f.DurationVar(&o.CommandTimeout, "command-timeout", 15*time.Second, "SDK command timeout")
 	f.DurationVar(&o.CleanupTimeout, "cleanup-timeout", 5*time.Second, "SDK cleanup budget")
 	if err := f.Parse(args); err != nil {
@@ -298,7 +302,7 @@ func startProcess(ctx context.Context, options appOptions, serve serveOptions) (
 	} else {
 		childArgs = append(childArgs, "--endpoint", serve.Endpoint)
 	}
-	childArgs = append(childArgs, "--command-timeout", serve.CommandTimeout.String(), "--cleanup-timeout", serve.CleanupTimeout.String())
+	childArgs = append(childArgs, "--input-mode", serve.InputMode, "--command-timeout", serve.CommandTimeout.String(), "--cleanup-timeout", serve.CleanupTimeout.String())
 	cmd := exec.Command(executable, childArgs...)
 	backgroundProcess(cmd)
 	cmd.Stdin = nil

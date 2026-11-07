@@ -156,7 +156,7 @@ func TestSnapshotRefInputWorkflow(t *testing.T) {
 	if receipt, err := p.Fill(t.Context(), qdriver.CSS("#formatted"), "lower"); !errors.Is(err, qdriver.ErrFillRejected) || !receipt.InputCompleted {
 		t.Fatalf("formatting was not reported as a completed but rejected edit: %+v, %v", receipt, err)
 	}
-	evaluateJSON(t, p, "window.formatEvents", "1")
+	evaluateJSON(t, p, "window.formatEvents", "5")
 	evaluateJSON(t, p, "document.getElementById('formatted').value", `"LOWER"`)
 }
 

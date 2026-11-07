@@ -25,6 +25,7 @@ type sessionMetadata struct {
 	Endpoint       string        `json:"endpoint"`
 	Chrome         string        `json:"chrome,omitempty"`
 	Headless       bool          `json:"headless,omitempty"`
+	InputMode      string        `json:"inputMode,omitempty"`
 	BrowserPID     int           `json:"browserPid,omitempty"`
 	BrowserProfile string        `json:"browserProfile,omitempty"`
 	CommandTimeout time.Duration `json:"commandTimeout"`
@@ -153,6 +154,12 @@ func readMetadata(path, id string) (sessionMetadata, error) {
 }
 
 func resolveServe(o appOptions, requested serveOptions) (serveOptions, error) {
+	if requested.InputMode != "" && o.InputMode != "" && requested.InputMode != o.InputMode {
+		return requested, invalid("global and start/serve --input-mode values disagree")
+	}
+	if requested.InputMode == "" {
+		requested.InputMode = o.InputMode
+	}
 	if requested.Chrome != "" && o.Chrome != "" && requested.Chrome != o.Chrome {
 		return requested, invalid("global and start/serve --chrome values disagree")
 	}
@@ -180,6 +187,9 @@ func resolveServe(o appOptions, requested serveOptions) (serveOptions, error) {
 			return requested, err
 		}
 		if err == nil {
+			if requested.InputMode == "" {
+				requested.InputMode = saved.InputMode
+			}
 			if requested.Endpoint == "" && requested.Chrome == "" {
 				if saved.Chrome != "" {
 					requested.Chrome = saved.Chrome
@@ -197,6 +207,12 @@ func resolveServe(o appOptions, requested serveOptions) (serveOptions, error) {
 				requested.CleanupTimeout = saved.CleanupTimeout
 			}
 		}
+	}
+	if requested.InputMode == "" {
+		requested.InputMode = "paced"
+	}
+	if requested.InputMode != "paced" && requested.InputMode != "fast" {
+		return requested, invalid("--input-mode must be paced or fast")
 	}
 	if requested.Chrome != "" {
 		if !o.Named {
@@ -228,6 +244,9 @@ func endpointHash(endpoint string) string {
 }
 
 func checkSession(o appOptions, d discovery, serve serveOptions) error {
+	if serve.InputMode != "" && serve.InputMode != d.InputMode {
+		return &commandError{Code: "session_conflict", Message: "session uses different input pacing; stop it before changing --input-mode"}
+	}
 	if o.Named && d.Session != o.Session {
 		return &commandError{Code: "session_conflict", Message: "runtime belongs to another session"}
 	}
@@ -320,7 +339,7 @@ func newSessionStore(o appOptions, serve serveOptions, instance string) (*sessio
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	return &sessionStore{path: o.Metadata, metadata: sessionMetadata{Version: protocolVersion, ID: o.Session, Endpoint: serve.Endpoint, Chrome: serve.Chrome, Headless: serve.Headless, CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout, CreatedAt: created, UpdatedAt: now, Instance: instance, PID: os.Getpid(), State: "running", Tasks: []string{"default"}, Pages: []pageView{}}}, nil
+	return &sessionStore{path: o.Metadata, metadata: sessionMetadata{Version: protocolVersion, ID: o.Session, Endpoint: serve.Endpoint, Chrome: serve.Chrome, Headless: serve.Headless, InputMode: serve.InputMode, CommandTimeout: serve.CommandTimeout, CleanupTimeout: serve.CleanupTimeout, CreatedAt: created, UpdatedAt: now, Instance: instance, PID: os.Getpid(), State: "running", Tasks: []string{"default"}, Pages: []pageView{}}}, nil
 }
 
 func (s *sessionStore) save(ctx context.Context) error {
@@ -403,6 +422,7 @@ func sessionInfo(ctx context.Context, o appOptions) (map[string]any, error) {
 		return nil, err
 	}
 	result := map[string]any{"id": metadata.ID, "endpoint": publicEndpoint(metadata.Endpoint), "state": metadata.State, "running": false, "createdAt": metadata.CreatedAt, "updatedAt": metadata.UpdatedAt, "lastInstance": metadata.Instance, "lastPid": metadata.PID, "lastObservedTasks": metadata.Tasks, "lastObservedPages": metadata.Pages, "metadata": o.Metadata, "runtime": o.State, "lastCleanup": metadata.Cleanup}
+	result["inputMode"] = metadata.InputMode
 	if metadata.Chrome != "" {
 		result["browser"] = map[string]any{"chrome": metadata.Chrome, "headless": metadata.Headless, "profile": metadata.BrowserProfile, "lastPid": metadata.BrowserPID, "managed": true}
 	}
