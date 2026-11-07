@@ -6,8 +6,27 @@ tasks, page names, frame sessions, snapshot refs, and armed event subscriptions
 between separate command invocations. It launches an installed Chrome executable
 with `--chrome PATH`, or connects to an existing browser with `--endpoint URL`.
 Session configuration, managed browser profiles, and last-observed task/page
-grouping live in the OS application data directory. It does not execute
-`ego-browser nodejs` scripts.
+grouping live in the OS application data directory. The optional `run` command
+executes JavaScript workflows using this CLI's session API.
+
+## JavaScript workflows
+
+With Node.js 18+ on PATH:
+
+```sh
+cdp-q-driver --session work --timeout 60s run workflow.js
+cdp-q-driver --session work run --node /path/to/node workflow.js argument
+```
+
+Scripts are async function bodies with `session`, `console`, and `require`.
+`await` browser operations and `return` a JSON value. Use `run -` for stdin and
+`session.args` for positional script arguments. Browser commands reuse the
+selected session; it starts on the first browser command if absent, while
+`session.status()` only inspects a running session. Completion or failure
+leaves the browser and pages available for later CLI calls. Console logs go to
+stderr; stdout remains the single JSON outcome. Only `run` requires Node.js.
+The script API, examples, limits, and error behavior are documented in
+[JavaScript workflows](javascript.md).
 
 ## Build and run
 

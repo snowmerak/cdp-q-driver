@@ -25,6 +25,11 @@ Session:
   status                     Inspect the running session
   stop                       Clean up tasks and stop the control process
 
+JavaScript workflows (Node.js required only for run):
+  run [--node PATH] SCRIPT|- [ARG ...]
+                             Execute an async function body with session API
+                             Return JSON; console logs go to stderr
+
 Tasks and pages:
   task new NAME              Create a task (default task exists at startup)
   task list
@@ -84,7 +89,8 @@ and an automatic loopback CDP port; --headless opts out of the visible window.
 stop also closes a Chrome instance launched by this session; external endpoint
 browsers stay running. status/stop/info/list do not
 auto-start. --state FILE selects the previous explicit-file/manual-start mode.
-ego-browser Node.js script compatibility is not provided.
+run reuses the selected session; browser commands keep their existing semantics.
+Its script API is specific to cdp-q-driver, not ego-browser compatible.
 `
 
 func parseCommand(args []string, stdin io.Reader) (request, error) {

@@ -79,6 +79,22 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	if err := configureSession(&options, seen); err != nil {
 		return emitError(err, 2)
 	}
+	if args[0] == "run" {
+		result, err := runScript(ctx, options, args[1:], stdin, stderr)
+		if err != nil {
+			code := 1
+			var own *commandError
+			if errors.As(err, &own) && own.Code == "invalid_argument" {
+				code = 2
+			}
+			_ = json.NewEncoder(stderr).Encode(response{OK: false, Result: result, Error: failure(err, false)})
+			return code
+		}
+		if err := json.NewEncoder(stdout).Encode(response{OK: true, Result: result}); err != nil {
+			return 1
+		}
+		return 0
+	}
 	if args[0] == "start" || args[0] == "serve" {
 		serve, err := parseServe(args[1:])
 		if err != nil {

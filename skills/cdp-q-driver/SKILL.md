@@ -1,6 +1,6 @@
 ---
 name: cdp-q-driver
-description: Find and launch installed Chrome/Chromium, choose an executable, or connect to an explicit CDP endpoint with the cdp-q-driver CLI. Use for browser tasks that need named sessions, snapshot refs, native input, or popup, dialog, and file events across separate command invocations.
+description: "Control installed Chrome/Chromium with the cdp-q-driver CLI: automatic launch, named sessions, async JavaScript workflows, snapshot refs, native input, and popup/dialog/file events. Use for browser research, dynamic-page extraction, and interaction across command invocations."
 ---
 
 # CDP Q Driver
@@ -119,6 +119,33 @@ requested user handoff.
   sessions, not general application readiness. Frame changes can invalidate it.
   `page screenshot PAGE FILE` activates the target tab and creates a PNG without
   overwriting an existing file.
+
+## Choose individual commands or a JavaScript workflow
+
+Use individual CLI commands for short inspection and uncertain next steps.
+Prefer `run` when navigation, conditional waiting, repeated extraction, or
+branching can be expressed as one known workflow. This reduces agent/tool
+round trips while retaining the existing Go engine and selected session.
+
+With Node.js 18+ on PATH, write an async function body and execute it with
+`cdp-q-driver --session ID --timeout 60s run workflow.js [ARG ...]`.
+Use `run --node PATH` to choose Node; only `run` requires it. Scripts receive
+`session`, `console`, and `require`; positional arguments are `session.args`.
+Use `session.page("main")` for an existing tab, and `await session.newPage(...)`
+only when creating one is intended. Await commands and return a JSON result;
+logs go to stderr. Completion/failure keeps session resources alive.
+
+Before using this mode, read [references/javascript.md](references/javascript.md)
+for the executable extraction example, locators, page/host JavaScript boundary,
+ref invalidation, timeout/error handling, and generic event commands.
+
+For dynamic lists, wait for an observed readiness condition rather than
+repeated snapshots or fixed sleeps. Extract the full requested set, including
+each item's direct link, and check counts/missing fields. A snapshot budget
+or sample of a few items is not a reason to omit remaining links. DOM extraction
+only covers loaded items; inspect pagination/lazy loading before claiming all
+results. `waitForSelector` requires a unique match; use `waitForFunction` for
+list counts. Never silently substitute a different source or scope.
 
 ## Events and failure recovery
 

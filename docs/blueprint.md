@@ -315,3 +315,5 @@ named session 확장의 검증은 OS별 앱 데이터 경로, ID 검증, 최초 
 전체 회귀 검증 중 프레임 발견과 AX/DOM 조회 사이의 일시적인 frameId 소멸이 selector 대기 밖으로 전파되는 경로를 보완했다. selector 기반 관찰만 다시 시도하며 ref의 정확한 대상·stale 실패와 입력 비재전송 계약을 유지한다. 실제 OOPIF를 반복 교체한 뒤 안정된 요소를 기다리는 fixture로 확인한다.
 
 입력 pacing 확장은 기본 마우스 경로에 eased cubic Bezier와 거리·가시 대상 크기 기반 시간을 적용한다. 종점은 검증한 hit point이며 임의 착지·overshoot는 추가하지 않는다. 타이핑은 QWERTY의 키 거리·행·손·손가락·반복·Shift 전환 비용과 제한적인 양손 key rollover를 사용한다. 동시에 유지하는 문자 키는 최대 두 개이며 취소 시 문자 키와 Shift를 release-only로 정리한다. 이는 실측 인체 모델이 아닌 휴리스틱이다. Unicode fallback은 유지하며 실제 두벌식 IME 조합은 후속 범위다. 실제 Chrome의 겹친 키 이벤트·Unicode 경계·취소 정리 및 전체 회귀 테스트를 통과했다. 공개 행동 탐지 페이지의 유효 제출 1회에서는 여전히 suspiciousClientSideBehavior 판정을 받았으며 탐지 통과를 보장하지 않는다.
+
+JavaScript workflow 확장은 `run SCRIPT|-`에서만 외부 Node.js를 사용하는 얇은 실행 계층이다. async 함수 본문의 session API가 기존 CLI 파서와 Go 세션 RPC를 사용하며 별도 CDP 엔진·ref 체계를 만들지 않는다. 탐색·조건 대기·입력·전체 링크 추출을 한 도구 호출로 묶고 순서대로 실행한다. 완료·실패 후 세션은 유지하며 Node 자식은 회수한다. 스크립트 전체 timeout과 개별 SDK timeout을 유지하고, 오류에는 앞선 변경의 가능성을 보존한다. 실제 Chrome에서 한글 입력, 동적 목록의 다섯 링크, ref 무효화, 예외 이후 입력 보존과 deadline 이후 세션 재사용을 검증한다.

@@ -13,6 +13,11 @@ terminal invocations while preserving
 the SDK's existing import path. See the [CLI guide](docs/cli.md) for all commands,
 JSON outcomes, session lifetime, and file/event workflows.
 
+Use `cdp-q-driver --session work run workflow.js` to combine navigation,
+condition waits, native input, and extraction in one async JavaScript workflow.
+Only `run` needs Node.js; the Go SDK and other CLI commands remain standalone.
+See [JavaScript workflows](docs/javascript.md) for the session API and examples.
+
 The first four milestones implement tab lifecycle management, frame-aware observation/input, and event/file workflows. Launch a dedicated browser or connect to an explicit endpoint, capture semantic snapshots across iframe/OOPIF and open shadow-root boundaries, select exact nodes by opaque refs or CSS/text/role, and verify input results. Prepare subscriptions before triggering popups, dialogs, file choosers, downloads, or network requests. SDK cleanup preserves borrowed tabs and the external browser; stopping a CLI-managed Chrome session also terminates its dedicated browser.
 
 Closed shadow roots and non-axis-aligned frame transforms are not supported.
@@ -20,6 +25,7 @@ Closed shadow roots and non-axis-aligned frame transforms are not supported.
 ## Requirements
 
 - Go 1.27.3 or newer, matching `go.mod`.
+- Node.js 18+ on PATH, or `run --node PATH`, only for JavaScript workflows.
 - An installed Chrome/Chromium browser (automatically found on PATH or in standard
   OS installation locations), an explicit `--chrome PATH`, or an existing
   debugging endpoint supplied with `--endpoint URL`.
@@ -58,7 +64,7 @@ the local CLI. The module-root package remains importable as the Go SDK.
 
 The repository ships one portable Agent Skill at
 [`skills/cdp-q-driver`](skills/cdp-q-driver/SKILL.md). It teaches agents to use
-named sessions, snapshot refs, native input, event/file workflows, and scoped
+named sessions, JavaScript workflows, snapshot refs, native input, event/file workflows, and scoped
 cleanup with this CLI. Its supporting resources are included in the skill folder
 so an installed copy does not depend on this repository checkout.
 
